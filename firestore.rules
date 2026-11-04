@@ -1,0 +1,158 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidAppUser(data) {
+      return data.keys().hasAll([
+        'cedula', 'name', 'password', 'role', 'isOnline', 'lastSeen',
+        'canCreateTasks', 'canEditTasks', 'canDeleteTasks', 'canSendChat',
+        'canViewVault', 'canExportReports', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'cedula', 'name', 'password', 'role', 'email', 'department',
+        'isOnline', 'lastSeen', 'canCreateTasks', 'canEditTasks',
+        'canDeleteTasks', 'canSendChat', 'canViewVault', 'canExportReports', 'createdAt'
+      ]) &&
+      data.cedula is string && data.cedula.size() >= 4 && data.cedula.size() <= 20 &&
+      data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+      data.password is string && data.password.size() >= 4 && data.password.size() <= 100 &&
+      data.role in ['admin', 'user'] &&
+      data.isOnline is bool &&
+      data.lastSeen is string && data.lastSeen.size() <= 50 &&
+      data.canCreateTasks is bool &&
+      data.canEditTasks is bool &&
+      data.canDeleteTasks is bool &&
+      data.canSendChat is bool &&
+      data.canViewVault is bool &&
+      data.canExportReports is bool &&
+      data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll([
+        'title', 'priority', 'status', 'progress', 'assignedToCedula',
+        'assignedToName', 'createdByCedula', 'createdByName', 'createdAt', 'dueDate'
+      ]) &&
+      data.keys().hasOnly([
+        'title', 'description', 'priority', 'status', 'progress', 'tags',
+        'assignedToCedula', 'assignedToName', 'createdByCedula', 'createdByName',
+        'createdAt', 'dueDate', 'completedAt', 'notes', 'accessEmail',
+        'accessPassword', 'directLink', 'category'
+      ]) &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 180 &&
+      data.priority in ['baja', 'media', 'alta', 'critica'] &&
+      data.status in ['pendiente', 'en_progreso', 'completada'] &&
+      data.progress is number && data.progress >= 0 && data.progress <= 100 &&
+      data.assignedToCedula is string && data.assignedToCedula.size() <= 20 &&
+      data.assignedToName is string && data.assignedToName.size() <= 100 &&
+      data.createdByCedula is string && data.createdByCedula.size() <= 20 &&
+      data.createdByName is string && data.createdByName.size() <= 100 &&
+      data.createdAt is string && data.createdAt.size() <= 50 &&
+      data.dueDate is string && data.dueDate.size() <= 50;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+        'actorCedula', 'actorName', 'actorRole', 'actionType',
+        'module', 'description', 'timestamp', 'severity'
+      ]) &&
+      data.keys().hasOnly([
+        'actorCedula', 'actorName', 'actorRole', 'actionType',
+        'module', 'description', 'targetId', 'timestamp', 'severity'
+      ]) &&
+      data.actorCedula is string && data.actorCedula.size() <= 20 &&
+      data.actorName is string && data.actorName.size() <= 100 &&
+      data.actorRole in ['admin', 'user'] &&
+      data.actionType is string && data.actionType.size() <= 60 &&
+      data.module is string && data.module.size() <= 60 &&
+      data.description is string && data.description.size() <= 500 &&
+      data.timestamp is string && data.timestamp.size() <= 50 &&
+      data.severity in ['info', 'warning', 'critical'];
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll([
+        'senderCedula', 'senderName', 'senderRole', 'text', 'channel', 'timestamp'
+      ]) &&
+      data.keys().hasOnly([
+        'senderCedula', 'senderName', 'senderRole', 'text', 'channel', 'relatedTaskId', 'timestamp'
+      ]) &&
+      data.senderCedula is string && data.senderCedula.size() <= 20 &&
+      data.senderName is string && data.senderName.size() <= 100 &&
+      data.senderRole in ['admin', 'user'] &&
+      data.text is string && data.text.size() >= 1 && data.text.size() <= 1000 &&
+      data.channel is string && data.channel.size() <= 50 &&
+      data.timestamp is string && data.timestamp.size() <= 50;
+    }
+
+    function isValidCalendarEvent(data) {
+      return data.keys().hasAll([
+        'title', 'date', 'time', 'type', 'createdByCedula', 'createdByName'
+      ]) &&
+      data.keys().hasOnly([
+        'title', 'date', 'time', 'type', 'description', 'createdByCedula', 'createdByName', 'linkedTaskId'
+      ]) &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 150 &&
+      data.date is string && data.date.size() <= 50 &&
+      data.time is string && data.time.size() <= 20 &&
+      data.type in ['entrega', 'reunion', 'auditoria', 'hito', 'actividad'] &&
+      data.createdByCedula is string && data.createdByCedula.size() <= 20 &&
+      data.createdByName is string && data.createdByName.size() <= 100;
+    }
+
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    match /app_users/{cedula} {
+      allow get: if isValidId(cedula);
+      allow list: if request.query.limit <= 500;
+      allow create: if isValidId(cedula) && isValidAppUser(incoming());
+      allow update: if isValidId(cedula) && isValidAppUser(incoming());
+      allow delete: if isValidId(cedula);
+    }
+
+    match /tasks/{taskId} {
+      allow get: if isValidId(taskId);
+      allow list: if request.query.limit <= 500;
+      allow create: if isValidId(taskId) && isValidTask(incoming());
+      allow update: if isValidId(taskId) && isValidTask(incoming());
+      allow delete: if isValidId(taskId);
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId);
+      allow list: if request.query.limit <= 500;
+      allow create: if isValidId(logId) && isValidAuditLog(incoming());
+      allow update: if isValidId(logId) && isValidAuditLog(incoming());
+      allow delete: if isValidId(logId);
+    }
+
+    match /chat_messages/{msgId} {
+      allow get: if isValidId(msgId);
+      allow list: if request.query.limit <= 500;
+      allow create: if isValidId(msgId) && isValidChatMessage(incoming());
+      allow update: if isValidId(msgId) && isValidChatMessage(incoming());
+      allow delete: if isValidId(msgId);
+    }
+
+    match /calendar_events/{eventId} {
+      allow get: if isValidId(eventId);
+      allow list: if request.query.limit <= 500;
+      allow create: if isValidId(eventId) && isValidCalendarEvent(incoming());
+      allow update: if isValidId(eventId) && isValidCalendarEvent(incoming());
+      allow delete: if isValidId(eventId);
+    }
+  }
+}

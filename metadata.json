@@ -1,0 +1,8 @@
+{
+  "name": "Remix TaskFlow Pro - Sistema de Gestión y Auditoría",
+  "description": "Plataforma empresarial de gestión de tareas con cédula y contraseña, auditoría en tiempo real, reportes PDF, respaldos de base de datos, chat y calendario sincronizado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

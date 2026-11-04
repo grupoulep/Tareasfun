@@ -1,0 +1,123 @@
+{
+  "entities": {
+    "AppUser": {
+      "title": "AppUser",
+      "description": "Sistema de usuarios con acceso por cédula y contraseña, roles y permisos granulares.",
+      "type": "object",
+      "properties": {
+        "cedula": { "type": "string", "minLength": 4, "maxLength": 20, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "password": { "type": "string", "minLength": 4, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "email": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 80 },
+        "isOnline": { "type": "boolean" },
+        "lastSeen": { "type": "string", "maxLength": 50 },
+        "canCreateTasks": { "type": "boolean" },
+        "canEditTasks": { "type": "boolean" },
+        "canDeleteTasks": { "type": "boolean" },
+        "canSendChat": { "type": "boolean" },
+        "canViewVault": { "type": "boolean" },
+        "canExportReports": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["cedula", "name", "password", "role", "isOnline", "lastSeen", "canCreateTasks", "canEditTasks", "canDeleteTasks", "canSendChat", "canViewVault", "canExportReports", "createdAt"]
+    },
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "Tarea o actividad con prioridades, etiquetas, credenciales, links y seguimiento.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "priority": { "type": "string", "enum": ["baja", "media", "alta", "critica"] },
+        "status": { "type": "string", "enum": ["pendiente", "en_progreso", "completada"] },
+        "progress": { "type": "number" },
+        "tags": { "type": "string", "maxLength": 300 },
+        "assignedToCedula": { "type": "string", "maxLength": 20 },
+        "assignedToName": { "type": "string", "maxLength": 100 },
+        "createdByCedula": { "type": "string", "maxLength": 20 },
+        "createdByName": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "dueDate": { "type": "string", "maxLength": 50 },
+        "completedAt": { "type": "string", "maxLength": 50 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "accessEmail": { "type": "string", "maxLength": 150 },
+        "accessPassword": { "type": "string", "maxLength": 150 },
+        "directLink": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "maxLength": 80 }
+      },
+      "required": ["title", "priority", "status", "progress", "assignedToCedula", "assignedToName", "createdByCedula", "createdByName", "createdAt", "dueDate"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Registro en tiempo real de cada acción realizada por un usuario o administrador.",
+      "type": "object",
+      "properties": {
+        "actorCedula": { "type": "string", "maxLength": 20 },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "actorRole": { "type": "string", "enum": ["admin", "user"] },
+        "actionType": { "type": "string", "maxLength": 60 },
+        "module": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 500 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 50 },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] }
+      },
+      "required": ["actorCedula", "actorName", "actorRole", "actionType", "module", "description", "timestamp", "severity"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Mensaje en tiempo real para coordinar con el equipo de trabajo.",
+      "type": "object",
+      "properties": {
+        "senderCedula": { "type": "string", "maxLength": 20 },
+        "senderName": { "type": "string", "maxLength": 100 },
+        "senderRole": { "type": "string", "enum": ["admin", "user"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "channel": { "type": "string", "maxLength": 50 },
+        "relatedTaskId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["senderCedula", "senderName", "senderRole", "text", "channel", "timestamp"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Evento clave o actividad sincronizada en el calendario interactivo.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 2, "maxLength": 150 },
+        "date": { "type": "string", "maxLength": 50 },
+        "time": { "type": "string", "maxLength": 20 },
+        "type": { "type": "string", "enum": ["entrega", "reunion", "auditoria", "hito", "actividad"] },
+        "description": { "type": "string", "maxLength": 500 },
+        "createdByCedula": { "type": "string", "maxLength": 20 },
+        "createdByName": { "type": "string", "maxLength": 100 },
+        "linkedTaskId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["title", "date", "time", "type", "createdByCedula", "createdByName"]
+    }
+  },
+  "firestore": {
+    "/app_users/{cedula}": {
+      "schema": { "$ref": "#/entities/AppUser" },
+      "description": "Perfiles de usuarios con cédula como ID, credenciales y permisos de acciones."
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/TaskItem" },
+      "description": "Tareas operativas con prioridad, fechas límite, notas, credenciales y enlaces."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Logs de auditoría detallados en tiempo real de cada acción del usuario."
+    },
+    "/chat_messages/{msgId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Mensajes de chat del equipo en tiempo real."
+    },
+    "/calendar_events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Eventos clave y actividades del calendario sincronizado."
+    }
+  }
+}
