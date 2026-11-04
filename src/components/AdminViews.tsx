@@ -1109,13 +1109,13 @@ jobs:
       - name: Descargar código del repositorio (Checkout)
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js 20
+      - name: Configurar Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Instalar dependencias
-        run: npm install
+      - name: Instalar dependencias (evitando conflicto ERESOLVE)
+        run: npm install --legacy-peer-deps
 
       - name: Compilar aplicación para producción
         run: npm run build
@@ -1140,7 +1140,7 @@ jobs:
         uses: actions/deploy-pages@v4`;
 
           const ghPagesManualCode = `# Opción alternativa: Despliegue directo con paquete gh-pages
-npm install -D gh-pages
+npm install -D gh-pages --legacy-peer-deps
 
 # Agrega estos scripts en tu package.json:
 # "predeploy": "npm run build",
