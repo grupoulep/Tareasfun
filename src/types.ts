@@ -13,6 +13,29 @@ export interface AppUser {
   canSendChat: boolean;
   canViewVault: boolean;
   canExportReports: boolean;
+  approvalStatus?: 'aprobado' | 'pendiente' | 'rechazado';
+  // Datos personales de la cédula, ubicación, residencia, familiares y bancarios (visibles solo por Admin)
+  cedulaIssuePlace?: string;
+  cedulaIssueDate?: string;
+  birthDate?: string;
+  birthPlace?: string;
+  bloodType?: string;
+  maritalStatus?: string;
+  phone?: string;
+  locationDepartmentState?: string;
+  locationCity?: string;
+  residenceAddress?: string;
+  residenceType?: string;
+  residenceStratum?: string;
+  familyMembersCount?: number;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyRelationship?: string;
+  familyNotes?: string;
+  bankName?: string;
+  bankAccountType?: string;
+  bankAccountNumber?: string;
+  bankAccountHolder?: string;
   createdAt: string;
 }
 

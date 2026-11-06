@@ -122,22 +122,27 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B2559]/70 p-4 overflow-y-auto">
-      <div className="bg-white border border-[#B3D9FF] rounded-2xl w-full max-w-3xl overflow-hidden my-8 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0B2559]/70 sm:p-4 overflow-y-auto">
+      <div className="bg-white border-t-2 sm:border border-[#B3D9FF] rounded-t-3xl sm:rounded-2xl w-full max-w-3xl max-h-[94vh] sm:max-h-none flex flex-col overflow-hidden sm:my-8 shadow-xl">
+        {/* Barra de arrastre para Teléfono */}
+        <div className="sm:hidden pt-2 pb-1 bg-[#0B2559] flex justify-center">
+          <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]/50" />
+        </div>
+
         {/* Cabecera del Modal con el nuevo logo FUN_BLANCO sobre fondo institucional */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
             <img
               src={`${import.meta.env.BASE_URL}assets/aistudio/FUN_BLANCO_e68e4ad5`}
               alt="Logo Fundación ULEP"
-              className="h-10 w-auto object-contain"
+              className="h-8 sm:h-10 w-auto object-contain shrink-0"
               referrerPolicy="no-referrer"
             />
-            <div>
-              <h2 className="text-base font-bold text-white">
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-bold text-white truncate">
                 {initialTask ? 'Editar Registro de Actividad / Tarea' : 'Nueva Actividad con Asignación y Credenciales'}
               </h2>
-              <p className="text-xs text-[#B3D9FF] mt-0.5 tabular-nums">
+              <p className="hidden sm:block text-xs text-[#B3D9FF] mt-0.5 tabular-nums truncate">
                 {initialTask
                   ? `Registrado por: ${initialTask.createdByName} (${initialTask.createdByCedula}) · Fecha: ${new Date(initialTask.createdAt).toLocaleString('es-ES')}`
                   : `Autor actual: ${currentUser.name} (Cédula: ${currentUser.cedula}) · Fecha y hora automática`}
@@ -147,13 +152,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-2 text-[#B3D9FF] hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+            className="w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center text-[#B3D9FF] hover:text-white rounded-lg hover:bg-white/10 transition-colors shrink-0"
           >
             <i className="fi fi-rr-cross text-sm" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[82vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto flex-1 max-h-[82vh]">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold text-[#0B2559] mb-1">

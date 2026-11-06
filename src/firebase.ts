@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
+import { SINGLE_ADMIN_CEDULA } from './constants';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -67,17 +68,6 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-testConnection();
-
 export function cleanId(raw?: string): string {
   if (raw && /^[a-zA-Z0-9_\-]+$/.test(raw) && raw.length <= 128) {
     return raw;
@@ -86,21 +76,48 @@ export function cleanId(raw?: string): string {
 }
 
 export function sanitizeUserPayload(user: AppUser) {
+  const cleanCedula = String(user.cedula || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 20);
+  const isSingleAdmin = cleanCedula === SINGLE_ADMIN_CEDULA;
   return {
-    cedula: String(user.cedula || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 20),
-    name: String(user.name || 'Usuario').trim().slice(0, 100),
-    password: String(user.password || '1234').slice(0, 100),
-    role: user.role === 'admin' ? 'admin' : 'user',
+    cedula: cleanCedula,
+    name: String(user.name || (isSingleAdmin ? 'Administrador Principal ULEP' : 'Usuario')).trim().slice(0, 100),
+    password: String(user.password || (isSingleAdmin ? SINGLE_ADMIN_CEDULA : '1234')).slice(0, 100),
+    role: isSingleAdmin ? 'admin' : 'user',
     email: String(user.email || '').slice(0, 120),
     department: String(user.department || 'General').slice(0, 80),
     isOnline: Boolean(user.isOnline),
     lastSeen: String(user.lastSeen || new Date().toISOString()).slice(0, 50),
-    canCreateTasks: Boolean(user.canCreateTasks),
-    canEditTasks: Boolean(user.canEditTasks),
-    canDeleteTasks: Boolean(user.canDeleteTasks),
-    canSendChat: Boolean(user.canSendChat),
-    canViewVault: Boolean(user.canViewVault),
-    canExportReports: Boolean(user.canExportReports),
+    canCreateTasks: isSingleAdmin ? true : Boolean(user.canCreateTasks),
+    canEditTasks: isSingleAdmin ? true : Boolean(user.canEditTasks),
+    canDeleteTasks: isSingleAdmin ? true : Boolean(user.canDeleteTasks),
+    canSendChat: isSingleAdmin ? true : Boolean(user.canSendChat),
+    canViewVault: isSingleAdmin ? true : Boolean(user.canViewVault),
+    canExportReports: isSingleAdmin ? true : Boolean(user.canExportReports),
+    approvalStatus: isSingleAdmin
+      ? 'aprobado'
+      : user.approvalStatus && ['aprobado', 'pendiente', 'rechazado'].includes(user.approvalStatus)
+      ? user.approvalStatus
+      : 'aprobado',
+    cedulaIssuePlace: String(user.cedulaIssuePlace || '').trim().slice(0, 100),
+    cedulaIssueDate: String(user.cedulaIssueDate || '').trim().slice(0, 30),
+    birthDate: String(user.birthDate || '').trim().slice(0, 30),
+    birthPlace: String(user.birthPlace || '').trim().slice(0, 100),
+    bloodType: String(user.bloodType || '').trim().slice(0, 15),
+    maritalStatus: String(user.maritalStatus || '').trim().slice(0, 40),
+    phone: String(user.phone || '').trim().slice(0, 40),
+    locationDepartmentState: String(user.locationDepartmentState || '').trim().slice(0, 80),
+    locationCity: String(user.locationCity || '').trim().slice(0, 80),
+    residenceAddress: String(user.residenceAddress || '').trim().slice(0, 200),
+    residenceType: String(user.residenceType || '').trim().slice(0, 50),
+    residenceStratum: String(user.residenceStratum || '').trim().slice(0, 30),
+    familyMembersCount: Math.max(0, Math.min(50, Number(user.familyMembersCount) || 0)),
+    emergencyContactName: String(user.emergencyContactName || '').trim().slice(0, 100),
+    emergencyContactPhone: String(user.emergencyContactPhone || '').trim().slice(0, 40),
+    familyNotes: String(user.familyNotes || '').trim().slice(0, 300),
+    bankName: String(user.bankName || '').trim().slice(0, 80),
+    bankAccountType: String(user.bankAccountType || '').trim().slice(0, 50),
+    bankAccountNumber: String(user.bankAccountNumber || '').trim().slice(0, 60),
+    bankAccountHolder: String(user.bankAccountHolder || '').trim().slice(0, 120),
     createdAt: String(user.createdAt || new Date().toISOString()).slice(0, 50),
   };
 }
@@ -170,9 +187,13 @@ export async function saveUserToFirestore(user: AppUser) {
 }
 
 export async function deleteUserFromFirestore(cedula: string) {
-  const path = `app_users/${cedula}`;
+  const cleanCed = String(cedula || '').trim();
+  if (cleanCed === SINGLE_ADMIN_CEDULA) {
+    return;
+  }
+  const path = `app_users/${cleanCed}`;
   try {
-    await deleteDoc(doc(db, 'app_users', cedula));
+    await deleteDoc(doc(db, 'app_users', cleanCed));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -246,30 +267,136 @@ export async function deleteCalendarEventFromFirestore(eventId: string) {
   }
 }
 
+const DEMO_USER_CEDULAS = new Set([
+  '10000001',
+  '10203040',
+  '20304050',
+  '30405060',
+  '99001122',
+]);
+
+const DEMO_TASK_IDS = new Set([
+  'task_cierre_fiscal_01',
+  'task_migracion_ssl_02',
+  'task_auditoria_iso_03',
+  'task_backup_mensual_04',
+  'task_reporte_kpi_05',
+  'task_ejemplo_plantilla_01',
+]);
+
+const DEMO_EVENT_IDS = new Set([
+  'ev_cierre_01',
+  'ev_comite_02',
+  'ev_ejemplo_plantilla_01',
+  'ev_sync_task_cierre_fiscal_01',
+  'ev_sync_task_migracion_ssl_02',
+  'ev_sync_task_auditoria_iso_03',
+  'ev_sync_task_backup_mensual_04',
+  'ev_sync_task_reporte_kpi_05',
+]);
+
+const DEMO_CHAT_IDS = new Set(['msg_welcome_01', 'msg_welcome_02']);
+
 export async function seedInitialDatabaseIfEmpty() {
   try {
-    const [usersSnap, tasksSnap] = await Promise.all([
-      getDocs(query(collection(db, 'app_users'), limit(10))),
-      getDocs(query(collection(db, 'tasks'), limit(10)))
+    const isoNow = new Date().toISOString();
+
+    const [usersSnap, tasksSnap, eventsSnap, chatSnap, logsSnap] = await Promise.all([
+      getDocs(query(collection(db, 'app_users'), limit(200))),
+      getDocs(query(collection(db, 'tasks'), limit(200))),
+      getDocs(query(collection(db, 'calendar_events'), limit(200))),
+      getDocs(query(collection(db, 'chat_messages'), limit(200))),
+      getDocs(query(collection(db, 'audit_logs'), limit(200))),
     ]);
-    if (usersSnap.size >= 4 && !tasksSnap.empty) return;
 
-    const now = new Date();
-    const isoNow = now.toISOString();
-    const inTwoHours = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
-    const inEightHours = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString();
-    const yesterday = new Date(now.getTime() - 18 * 60 * 60 * 1000).toISOString();
-    const inThreeDays = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
-    const inFiveDays = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    let singleAdminExists = false;
 
-    const defaultUsers: AppUser[] = [
-      {
-        cedula: '10000001',
-        name: 'Carlos Mendoza (Director Admin)',
-        password: 'admin123',
+    // 1. Limpiar usuarios de prueba y asegurar que solo exista el Administrador Único (902050377) como admin
+    for (const userDoc of usersSnap.docs) {
+      const data = userDoc.data() as AppUser;
+      const docCedula = data.cedula || userDoc.id;
+
+      if (DEMO_USER_CEDULAS.has(docCedula) || DEMO_USER_CEDULAS.has(userDoc.id)) {
+        await deleteDoc(doc(db, 'app_users', userDoc.id));
+        continue;
+      }
+
+      if (docCedula === SINGLE_ADMIN_CEDULA) {
+        singleAdminExists = true;
+        if (data.role !== 'admin' || data.approvalStatus !== 'aprobado') {
+          await saveUserToFirestore({
+            ...data,
+            cedula: SINGLE_ADMIN_CEDULA,
+            role: 'admin',
+            approvalStatus: 'aprobado',
+            password: data.password || SINGLE_ADMIN_CEDULA,
+          });
+        }
+      } else if (data.role === 'admin') {
+        await saveUserToFirestore({
+          ...data,
+          cedula: docCedula,
+          role: 'user',
+        });
+      }
+    }
+
+    // 2. Eliminar tareas de demostración/prueba
+    for (const taskDoc of tasksSnap.docs) {
+      const tData = taskDoc.data() as Partial<TaskItem>;
+      if (
+        DEMO_TASK_IDS.has(taskDoc.id) ||
+        (tData.createdByCedula && DEMO_USER_CEDULAS.has(tData.createdByCedula)) ||
+        (tData.assignedToCedula && DEMO_USER_CEDULAS.has(tData.assignedToCedula))
+      ) {
+        await deleteDoc(doc(db, 'tasks', taskDoc.id));
+      }
+    }
+
+    // 3. Eliminar eventos de calendario de demostración/prueba
+    for (const evDoc of eventsSnap.docs) {
+      const evData = evDoc.data() as Partial<CalendarEvent>;
+      if (
+        DEMO_EVENT_IDS.has(evDoc.id) ||
+        (evData.createdByCedula && DEMO_USER_CEDULAS.has(evData.createdByCedula)) ||
+        (evData.linkedTaskId && DEMO_TASK_IDS.has(evData.linkedTaskId))
+      ) {
+        await deleteDoc(doc(db, 'calendar_events', evDoc.id));
+      }
+    }
+
+    // 4. Eliminar mensajes de chat de demostración/prueba
+    for (const msgDoc of chatSnap.docs) {
+      const msgData = msgDoc.data() as Partial<ChatMessage>;
+      if (
+        DEMO_CHAT_IDS.has(msgDoc.id) ||
+        (msgData.senderCedula && DEMO_USER_CEDULAS.has(msgData.senderCedula))
+      ) {
+        await deleteDoc(doc(db, 'chat_messages', msgDoc.id));
+      }
+    }
+
+    // 5. Eliminar registros de auditoría generados por cuentas de prueba
+    for (const logDoc of logsSnap.docs) {
+      const logData = logDoc.data() as Partial<AuditLog>;
+      if (
+        (logData.actorCedula && DEMO_USER_CEDULAS.has(logData.actorCedula)) ||
+        (logData.targetId && (DEMO_USER_CEDULAS.has(logData.targetId) || DEMO_TASK_IDS.has(logData.targetId)))
+      ) {
+        await deleteDoc(doc(db, 'audit_logs', logDoc.id));
+      }
+    }
+
+    // 6. Crear el único Administrador Principal (902050377) si aún no existe
+    if (!singleAdminExists) {
+      const primaryAdmin: AppUser = {
+        cedula: SINGLE_ADMIN_CEDULA,
+        name: 'Administrador Principal ULEP',
+        password: SINGLE_ADMIN_CEDULA,
         role: 'admin',
         email: 'grupoulep@gmail.com',
-        department: 'Dirección General & TI',
+        department: 'Dirección General / Ejecutiva',
+        approvalStatus: 'aprobado',
         isOnline: false,
         lastSeen: isoNow,
         canCreateTasks: true,
@@ -279,235 +406,11 @@ export async function seedInitialDatabaseIfEmpty() {
         canViewVault: true,
         canExportReports: true,
         createdAt: isoNow,
-      },
-      {
-        cedula: '10203040',
-        name: 'Valeria Gómez',
-        password: 'user123',
-        role: 'user',
-        email: 'valeria.gomez@empresa.com',
-        department: 'Operaciones & Finanzas',
-        isOnline: false,
-        lastSeen: isoNow,
-        canCreateTasks: true,
-        canEditTasks: true,
-        canDeleteTasks: false,
-        canSendChat: true,
-        canViewVault: true,
-        canExportReports: true,
-        createdAt: isoNow,
-      },
-      {
-        cedula: '20304050',
-        name: 'Andrés Herrera',
-        password: 'user123',
-        role: 'user',
-        email: 'andres.herrera@empresa.com',
-        department: 'Infraestructura Cloud',
-        isOnline: false,
-        lastSeen: isoNow,
-        canCreateTasks: true,
-        canEditTasks: true,
-        canDeleteTasks: false,
-        canSendChat: true,
-        canViewVault: true,
-        canExportReports: true,
-        createdAt: isoNow,
-      },
-      {
-        cedula: '30405060',
-        name: 'Laura Ríos',
-        password: 'user123',
-        role: 'user',
-        email: 'laura.rios@empresa.com',
-        department: 'Auditoría & Cumplimiento',
-        isOnline: false,
-        lastSeen: isoNow,
-        canCreateTasks: true,
-        canEditTasks: true,
-        canDeleteTasks: false,
-        canSendChat: true,
-        canViewVault: false,
-        canExportReports: true,
-        createdAt: isoNow,
-      }
-    ];
-
-    for (const u of defaultUsers) {
-      await saveUserToFirestore(u);
+      };
+      await saveUserToFirestore(primaryAdmin);
     }
-
-    const defaultTasks: TaskItem[] = [
-      {
-        id: 'task_cierre_fiscal_01',
-        title: 'Conciliación y Cierre de Pasarela de Pagos Mensual',
-        description: 'Validar transacciones pendientes en el portal bancario, verificar rechazos y emitir certificado de cierre antes de la hora límite.',
-        priority: 'critica',
-        status: 'en_progreso',
-        progress: 65,
-        tags: 'Finanzas, Cierre-Mensual, Urgente',
-        assignedToCedula: '10203040',
-        assignedToName: 'Valeria Gómez',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        createdAt: isoNow,
-        dueDate: inTwoHours,
-        completedAt: '',
-        notes: 'Importante: Descargar extracto consolidado en formato XML antes de las 18:00 y validar código token.',
-        accessEmail: 'tesoreria.pagos@corporativo.com',
-        accessPassword: 'Finanzas#2026!Secure',
-        directLink: 'https://dashboard.stripe.com/login',
-        category: 'Finanzas'
-      },
-      {
-        id: 'task_migracion_ssl_02',
-        title: 'Renovación de Certificados SSL y Firewall Perimetral',
-        description: 'Actualizar certificados de seguridad en el balanceador de carga principal y comprobar estado de réplicas de producción.',
-        priority: 'critica',
-        status: 'pendiente',
-        progress: 20,
-        tags: 'Seguridad, Servidores, Cloud',
-        assignedToCedula: '20304050',
-        assignedToName: 'Andrés Herrera',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        createdAt: yesterday,
-        dueDate: yesterday,
-        completedAt: '',
-        notes: 'Acceder mediante consola SSH o panel Cloudflare corporativo. Reiniciar nginx tras validar llaves.',
-        accessEmail: 'infra.ops@corporativo.com',
-        accessPassword: 'CloudOps$9981_Admin',
-        directLink: 'https://dash.cloudflare.com',
-        category: 'Infraestructura'
-      },
-      {
-        id: 'task_auditoria_iso_03',
-        title: 'Revisión de Controles de Acceso ISO-27001 Trimestral',
-        description: 'Inspeccionar matriz de permisos de usuarios activos y generar acta de conformidad de accesos privilegiados.',
-        priority: 'alta',
-        status: 'en_progreso',
-        progress: 45,
-        tags: 'Auditoría, ISO27001, Permisos',
-        assignedToCedula: '10203040',
-        assignedToName: 'Valeria Gómez',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        createdAt: isoNow,
-        dueDate: inEightHours,
-        completedAt: '',
-        notes: 'Verificar que ningún usuario externo mantenga permisos de eliminación de registros.',
-        accessEmail: 'auditoria.interna@corporativo.com',
-        accessPassword: 'Audit2026*Compliance',
-        directLink: 'https://console.cloud.google.com',
-        category: 'Auditoría'
-      },
-      {
-        id: 'task_backup_mensual_04',
-        title: 'Verificación de Integridad de Respaldos en Frío',
-        description: 'Comprobar que las instantáneas mensuales de la base de datos se restauran sin pérdida de registros.',
-        priority: 'media',
-        status: 'completada',
-        progress: 100,
-        tags: 'Base-de-Datos, Backup, Mensual',
-        assignedToCedula: '10203040',
-        assignedToName: 'Valeria Gómez',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        createdAt: yesterday,
-        dueDate: inThreeDays,
-        completedAt: isoNow,
-        notes: 'Validación completada con 100% de integridad verificada en entorno staging.',
-        accessEmail: 'backups@corporativo.com',
-        accessPassword: 'Bk_Restore_2026!',
-        directLink: 'https://console.firebase.google.com',
-        category: 'Sistemas'
-      },
-      {
-        id: 'task_reporte_kpi_05',
-        title: 'Consolidado de Indicadores Operativos del Mes',
-        description: 'Cruzar métricas de entregas completadas vs pendientes para presentación de comité ejecutivo.',
-        priority: 'alta',
-        status: 'completada',
-        progress: 100,
-        tags: 'Reportes, KPI, Mensual',
-        assignedToCedula: '30405060',
-        assignedToName: 'Laura Ríos',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        createdAt: yesterday,
-        dueDate: inFiveDays,
-        completedAt: isoNow,
-        notes: 'Reporte adjunto en carpeta compartida del comité.',
-        accessEmail: 'kpi.comite@corporativo.com',
-        accessPassword: 'KpiExec#2026',
-        directLink: 'https://docs.google.com',
-        category: 'Operaciones'
-      }
-    ];
-
-    for (const t of defaultTasks) {
-      await saveTaskToFirestore(t);
-    }
-
-    const defaultEvents: CalendarEvent[] = [
-      {
-        id: 'ev_cierre_01',
-        title: 'Cierre de Pasarela y Reporte Financiero',
-        date: now.toISOString().split('T')[0],
-        time: '17:00',
-        type: 'entrega',
-        description: 'Entrega límite de conciliación mensual con credenciales verificadas.',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        linkedTaskId: 'task_cierre_fiscal_01'
-      },
-      {
-        id: 'ev_comite_02',
-        title: 'Comité de Auditoría y Seguridad en Tiempo Real',
-        date: inThreeDays.split('T')[0],
-        time: '10:30',
-        type: 'auditoria',
-        description: 'Revisión de logs detallados de acciones de usuarios y permisos.',
-        createdByCedula: '10000001',
-        createdByName: 'Carlos Mendoza (Director Admin)',
-        linkedTaskId: 'task_auditoria_iso_03'
-      }
-    ];
-
-    for (const ev of defaultEvents) {
-      await saveCalendarEventToFirestore(ev);
-    }
-
-    await saveChatMessageToFirestore({
-      senderCedula: '10000001',
-      senderName: 'Carlos Mendoza (Director Admin)',
-      senderRole: 'admin',
-      text: 'Bienvenidos al sistema central. Recuerden revisar la sección de Alertas de Prioridad y Cierre para las entregas de hoy.',
-      channel: 'general',
-      relatedTaskId: 'task_cierre_fiscal_01',
-      timestamp: isoNow
-    }, 'msg_welcome_01');
-
-    await saveChatMessageToFirestore({
-      senderCedula: '10203040',
-      senderName: 'Valeria Gómez',
-      senderRole: 'user',
-      text: 'Enterado Carlos, ya estoy al 65% con la conciliación de pasarela usando las credenciales adjuntas en la tarea.',
-      channel: 'general',
-      relatedTaskId: 'task_cierre_fiscal_01',
-      timestamp: isoNow
-    }, 'msg_welcome_02');
-
-    await recordAuditLog({
-      actorCedula: '10000001',
-      actorName: 'Carlos Mendoza (Director Admin)',
-      actorRole: 'admin',
-      actionType: 'INICIALIZAR_SISTEMA',
-      module: 'BASE_DE_DATOS',
-      description: 'Base de datos inicializada con usuarios, permisos, tareas críticas y calendario sincronizado.',
-      severity: 'info'
-    });
   } catch (err) {
-    console.error('Error seeding initial data:', err);
+    console.error('Error initializing production database:', err);
   }
 }
+

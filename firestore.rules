@@ -22,7 +22,14 @@ service cloud.firestore {
       data.keys().hasOnly([
         'cedula', 'name', 'password', 'role', 'email', 'department',
         'isOnline', 'lastSeen', 'canCreateTasks', 'canEditTasks',
-        'canDeleteTasks', 'canSendChat', 'canViewVault', 'canExportReports', 'createdAt'
+        'canDeleteTasks', 'canSendChat', 'canViewVault', 'canExportReports',
+        'approvalStatus', 'cedulaIssuePlace', 'cedulaIssueDate', 'birthDate',
+        'birthPlace', 'bloodType', 'maritalStatus', 'phone',
+        'locationDepartmentState', 'locationCity', 'residenceAddress',
+        'residenceType', 'residenceStratum', 'familyMembersCount',
+        'emergencyContactName', 'emergencyContactPhone', 'familyNotes',
+        'bankName', 'bankAccountType', 'bankAccountNumber', 'bankAccountHolder',
+        'createdAt'
       ]) &&
       data.cedula is string && data.cedula.size() >= 4 && data.cedula.size() <= 20 &&
       data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
@@ -36,6 +43,7 @@ service cloud.firestore {
       data.canSendChat is bool &&
       data.canViewVault is bool &&
       data.canExportReports is bool &&
+      (!('approvalStatus' in data) || data.approvalStatus in ['aprobado', 'pendiente', 'rechazado']) &&
       data.createdAt is string && data.createdAt.size() <= 50;
     }
 

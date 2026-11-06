@@ -1,1079 +1,931 @@
-import React, { useState, useEffect } from 'react';
-import { AppUser, TaskItem, ChatMessage, CalendarEvent } from '../types';
+import React, { useState } from 'react';
+import { AppUser, TaskItem, TaskPriority, TaskStatus } from '../types';
 import {
   saveTaskToFirestore,
   deleteTaskFromFirestore,
-  saveChatMessageToFirestore,
-  saveCalendarEventToFirestore,
-  deleteCalendarEventFromFirestore,
   recordAuditLog,
   cleanId
 } from '../firebase';
-import { generateMonthlyProgressPDF } from '../utils/pdfAndBackup';
 
 interface UserViewsProps {
-  activeSection:
-    | 'user_personal'
-    | 'user_all_tasks'
-    | 'user_priority_alerts'
-    | 'user_monthly_reports'
-    | 'user_calendar'
-    | 'user_chat';
-  onChangeSection?: (
-    sec:
-      | 'user_personal'
-      | 'user_all_tasks'
-      | 'user_priority_alerts'
-      | 'user_monthly_reports'
-      | 'user_calendar'
-      | 'user_chat'
-  ) => void;
   currentUser: AppUser;
-  users: AppUser[];
   tasks: TaskItem[];
-  chatMessages: ChatMessage[];
-  calendarEvents: CalendarEvent[];
   onOpenNewTask: () => void;
-  onEditTask: (task: TaskItem) => void;
+  deviceMode?: 'mobile' | 'tablet' | 'pc';
+  [key: string]: any;
 }
 
-type InboxScope = 'mis_tareas' | 'equipo' | 'urgentes' | 'completadas';
+interface PrioritySection {
+  key: TaskPriority;
+  name: string;
+  shortName: string;
+  dotColor: string;
+  badgeBg: string;
+  badgeText: string;
+  borderColor: string;
+  accentBg: string;
+  buttonBg: string;
+}
+
+const SECTIONS: PrioritySection[] = [
+  {
+    key: 'critica',
+    name: 'Prioridad Crítica',
+    shortName: 'Crítica',
+    dotColor: 'bg-rose-600',
+    badgeBg: 'bg-rose-50',
+    badgeText: 'text-rose-700',
+    borderColor: 'border-rose-200',
+    accentBg: 'bg-rose-50/50',
+    buttonBg: 'bg-rose-600 hover:bg-rose-700 text-white',
+  },
+  {
+    key: 'alta',
+    name: 'Prioridad Alta',
+    shortName: 'Alta',
+    dotColor: 'bg-amber-500',
+    badgeBg: 'bg-amber-50',
+    badgeText: 'text-amber-800',
+    borderColor: 'border-amber-200',
+    accentBg: 'bg-amber-50/50',
+    buttonBg: 'bg-amber-600 hover:bg-amber-700 text-white',
+  },
+  {
+    key: 'media',
+    name: 'Prioridad Media',
+    shortName: 'Media',
+    dotColor: 'bg-[#3B82F6]',
+    badgeBg: 'bg-[#EAF3FF]',
+    badgeText: 'text-[#0B2559]',
+    borderColor: 'border-[#B3D9FF]',
+    accentBg: 'bg-[#F4F9FF]',
+    buttonBg: 'bg-[#0B2559] hover:bg-[#15397A] text-white',
+  },
+  {
+    key: 'baja',
+    name: 'Prioridad Baja',
+    shortName: 'Baja',
+    dotColor: 'bg-slate-400',
+    badgeBg: 'bg-slate-100',
+    badgeText: 'text-slate-700',
+    borderColor: 'border-slate-200',
+    accentBg: 'bg-slate-50',
+    buttonBg: 'bg-slate-700 hover:bg-slate-800 text-white',
+  },
+];
 
 export const UserViews: React.FC<UserViewsProps> = ({
-  activeSection,
   currentUser,
-  users,
   tasks,
-  chatMessages,
-  calendarEvents,
   onOpenNewTask,
-  onEditTask,
+  deviceMode = 'pc',
 }) => {
-  const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
-  const [expandedEventIds, setExpandedEventIds] = useState<Record<string, boolean>>({});
-  const [showNewEventForm, setShowNewEventForm] = useState(false);
+  const isMobile = deviceMode === 'mobile';
 
-  const [inboxScope, setInboxScope] = useState<InboxScope>('mis_tareas');
-  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [nowTick, setNowTick] = useState<number>(Date.now());
+  // Inputs rápidos por sección
+  const [quickInputs, setQuickInputs] = useState<Record<TaskPriority, string>>({
+    critica: '',
+    alta: '',
+    media: '',
+    baja: '',
+  });
 
-  // Chat state
-  const [chatInput, setChatInput] = useState('');
-  const [chatChannel, setChatChannel] = useState('general');
-  const [linkedTaskChat, setLinkedTaskChat] = useState('');
+  // En Teléfono permite abrir/cerrar el input rápido para mantener la vista limpia
+  const [mobileQuickAddOpen, setMobileQuickAddOpen] = useState<Record<TaskPriority, boolean>>({
+    critica: false,
+    alta: false,
+    media: false,
+    baja: false,
+  });
 
-  // Calendar state
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [newEvTitle, setNewEvTitle] = useState('');
-  const [newEvTime, setNewEvTime] = useState('10:00');
-  const [newEvType, setNewEvType] = useState<'entrega' | 'reunion' | 'auditoria' | 'hito' | 'actividad'>('actividad');
-  const [newEvDesc, setNewEvDesc] = useState('');
+  // Filtro de prioridad y estado dentro del Botón Tipo Filtro
+  const [selectedPriorityTab, setSelectedPriorityTab] = useState<'todas' | TaskPriority>('todas');
+  const [statusFilter, setStatusFilter] = useState<'todos' | TaskStatus>('todos');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNowTick(Date.now());
-    }, 30000);
-    return () => clearInterval(timer);
-  }, []);
+  // Vista en cuadrícula de 2 columnas o lista en PC/Tablet
+  const [desktopGridLayout, setDesktopGridLayout] = useState<'stack' | 'grid'>('stack');
 
-  useEffect(() => {
-    if (activeSection === 'user_personal') setInboxScope('mis_tareas');
-    else if (activeSection === 'user_all_tasks') setInboxScope('equipo');
-    else if (activeSection === 'user_priority_alerts') setInboxScope('urgentes');
-    else if (activeSection === 'user_monthly_reports') setInboxScope('completadas');
-  }, [activeSection]);
+  // Tarea seleccionada exclusivamente para VER (Solo lectura, no editable)
+  const [viewingTask, setViewingTask] = useState<TaskItem | null>(null);
 
-  const canSeeVault = currentUser.role === 'admin' || currentUser.canViewVault;
+  // Ocultar o mostrar hechas
+  const [showCompleted, setShowCompleted] = useState(true);
 
-  const toggleTaskExpand = (taskId: string) => {
-    setExpandedTaskIds(prev => ({ ...prev, [taskId]: !prev[taskId] }));
-  };
+  // Botón corredizo: Tareas Personales vs Tareas del Grupo Empresarial
+  const [taskScope, setTaskScope] = useState<'personales' | 'grupo'>('personales');
 
-  const toggleEventExpand = (evId: string) => {
-    setExpandedEventIds(prev => ({ ...prev, [evId]: !prev[evId] }));
-  };
-
-  const formatCountdown = (dueDateStr: string, status: string) => {
-    if (status === 'completada') {
-      return { text: 'Entregada / Cerrada', urgent: false, overdue: false };
+  // Filtrar según el botón corredizo (Personales vs Grupo Empresarial)
+  const scopedTasks = tasks.filter(t => {
+    if (taskScope === 'personales') {
+      return (
+        t.assignedToCedula === currentUser.cedula ||
+        t.createdByCedula === currentUser.cedula
+      );
     }
-    const diffMs = new Date(dueDateStr).getTime() - nowTick;
-    const absHours = Math.floor(Math.abs(diffMs) / (1000 * 60 * 60));
-    const absMins = Math.floor((Math.abs(diffMs) % (1000 * 60 * 60)) / (1000 * 60));
+    return true; // Tareas del Grupo Empresarial
+  });
 
-    if (diffMs < 0) {
-      return {
-        text: `Vencida hace ${absHours}h ${absMins}m`,
-        urgent: true,
-        overdue: true
-      };
-    }
-    if (diffMs <= 24 * 3600 * 1000) {
-      return {
-        text: `Cierra en ${absHours}h ${absMins}m`,
-        urgent: true,
-        overdue: false
-      };
-    }
-    const days = Math.floor(absHours / 24);
-    return {
-      text: `${days}d ${absHours % 24}h restantes`,
-      urgent: false,
-      overdue: false
-    };
-  };
+  // Totales para resumen dentro del filtro
+  const totalScoped = scopedTasks.length;
+  const completedCount = scopedTasks.filter(t => t.status === 'completada').length;
+  const inProgressCount = scopedTasks.filter(t => t.status === 'en_progreso').length;
+  const startedCount = scopedTasks.filter(t => t.status === 'pendiente').length;
+  const completionPercent = totalScoped > 0 ? Math.round((completedCount / totalScoped) * 100) : 0;
 
-  const handleQuickProgressChange = async (task: TaskItem, newProgress: number) => {
-    if (!currentUser.canEditTasks && currentUser.role !== 'admin') return;
-    const newStatus = newProgress === 100 ? 'completada' : newProgress > 0 ? 'en_progreso' : 'pendiente';
+  // Cambiar el estado con un solo clic a: 'Iniciada', 'En proceso' o 'Hecha'
+  const handleSetStatus = async (task: TaskItem, newStatus: TaskStatus) => {
+    let progress = 0;
+    if (newStatus === 'completada') progress = 100;
+    else if (newStatus === 'en_progreso') progress = 50;
+    else progress = 0;
+
     const updated: TaskItem = {
       ...task,
-      progress: newProgress,
       status: newStatus,
+      progress,
       completedAt: newStatus === 'completada' ? new Date().toISOString() : '',
     };
+
     await saveTaskToFirestore(updated);
+
+    if (viewingTask && viewingTask.id === task.id) {
+      setViewingTask(updated);
+    }
+
+    const labelMap: Record<TaskStatus, string> = {
+      pendiente: 'INICIADA',
+      en_progreso: 'EN PROCESO',
+      completada: 'HECHA',
+    };
+
     await recordAuditLog({
       actorCedula: currentUser.cedula,
       actorName: currentUser.name,
       actorRole: currentUser.role,
-      actionType: newStatus === 'completada' ? 'COMPLETAR_TAREA' : 'ACTUALIZAR_PROGRESO',
-      module: 'BANDEJA_TAREAS',
-      description: `Actualizó el progreso de "${task.title}" a ${newProgress}% (${newStatus.toUpperCase()}).`,
+      actionType: 'CAMBIO_ESTADO_CHEQUEO',
+      module: 'LISTA_CHEQUEO',
+      description: `Marcó tarea "${task.title}" como [${labelMap[newStatus]}].`,
       targetId: task.id,
-      severity: 'info'
+      severity: 'info',
     });
   };
 
-  const handleToggleRevealPassword = async (task: TaskItem) => {
-    if (!canSeeVault) return;
-    const nextState = !revealedPasswords[task.id];
-    setRevealedPasswords(prev => ({ ...prev, [task.id]: nextState }));
-    if (nextState) {
-      await recordAuditLog({
-        actorCedula: currentUser.cedula,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        actionType: 'CONSULTAR_CONTRASENA_TAREA',
-        module: 'BOVEDA_CREDENCIALES',
-        description: `Visualizó las credenciales de acceso adjuntas en la actividad "${task.title}".`,
-        targetId: task.id,
-        severity: 'warning'
-      });
+  // Toggle directo con la casilla: si está Hecha pasa a Iniciada, si no pasa a Hecha
+  const handleToggleCheck = async (task: TaskItem) => {
+    const nextStatus: TaskStatus = task.status === 'completada' ? 'pendiente' : 'completada';
+    await handleSetStatus(task, nextStatus);
+  };
+
+  // Agregar tarea instantánea con Enter o botón
+  const handleAddQuick = async (priority: TaskPriority) => {
+    const text = (quickInputs[priority] || '').trim();
+    if (!text) return;
+
+    const newTask: TaskItem = {
+      id: cleanId(`chk_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`),
+      title: text,
+      description: '',
+      priority,
+      status: 'pendiente',
+      progress: 0,
+      tags: priority.toUpperCase(),
+      assignedToCedula: currentUser.cedula,
+      assignedToName: currentUser.name,
+      createdByCedula: currentUser.cedula,
+      createdByName: currentUser.name,
+      createdAt: new Date().toISOString(),
+      dueDate: new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString(),
+      completedAt: '',
+      notes: '',
+      accessEmail: '',
+      accessPassword: '',
+      directLink: '',
+      category: 'Chequeo',
+    };
+
+    await saveTaskToFirestore(newTask);
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'AGREGAR_CHEQUEO',
+      module: 'LISTA_CHEQUEO',
+      description: `Agregó a [${priority.toUpperCase()}]: "${text}".`,
+      targetId: newTask.id,
+      severity: 'info',
+    });
+
+    setQuickInputs(prev => ({ ...prev, [priority]: '' }));
+    if (isMobile) {
+      setMobileQuickAddOpen(prev => ({ ...prev, [priority]: false }));
     }
   };
 
-  const handleCopyText = async (text: string, keyId: string, label: string, taskTitle: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(keyId);
-    setTimeout(() => setCopiedId(null), 1800);
-    await recordAuditLog({
-      actorCedula: currentUser.cedula,
-      actorName: currentUser.name,
-      actorRole: currentUser.role,
-      actionType: 'COPIAR_CREDENCIAL',
-      module: 'BOVEDA_CREDENCIALES',
-      description: `Copió ${label} de la tarea "${taskTitle}".`,
-      severity: 'info'
-    });
-  };
-
-  const handleOpenDirectLink = async (task: TaskItem) => {
-    await recordAuditLog({
-      actorCedula: currentUser.cedula,
-      actorName: currentUser.name,
-      actorRole: currentUser.role,
-      actionType: 'ABRIR_LINK_DIRECTO',
-      module: 'ENLACES_TAREAS',
-      description: `Accedió al link directo (${task.directLink}) de la actividad "${task.title}".`,
-      targetId: task.id,
-      severity: 'info'
-    });
-  };
-
-  const handleDeleteTask = async (task: TaskItem) => {
+  // Eliminar tarea
+  const handleDelete = async (task: TaskItem) => {
     if (!currentUser.canDeleteTasks && currentUser.role !== 'admin') return;
     await deleteTaskFromFirestore(task.id);
+    if (viewingTask && viewingTask.id === task.id) {
+      setViewingTask(null);
+    }
     await recordAuditLog({
       actorCedula: currentUser.cedula,
       actorName: currentUser.name,
       actorRole: currentUser.role,
-      actionType: 'ELIMINAR_TAREA',
-      module: 'TAREAS',
-      description: `Eliminó la tarea "${task.title}".`,
+      actionType: 'ELIMINAR_CHEQUEO',
+      module: 'LISTA_CHEQUEO',
+      description: `Eliminó de la lista de chequeo: "${task.title}".`,
       targetId: task.id,
-      severity: 'warning'
+      severity: 'warning',
     });
   };
 
-  const handleDownloadMonthlyPDF = async () => {
-    if (!currentUser.canExportReports && currentUser.role !== 'admin') return;
-    const monthName = new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-    generateMonthlyProgressPDF({
-      generatedBy: currentUser,
-      tasks,
-      monthLabel: monthName,
-    });
-    await recordAuditLog({
-      actorCedula: currentUser.cedula,
-      actorName: currentUser.name,
-      actorRole: currentUser.role,
-      actionType: 'DESCARGAR_REPORTE_MENSUAL_PDF',
-      module: 'REPORTES_MENSUALES',
-      description: `Descargó el reporte de avance mensual en PDF.`,
-      severity: 'info'
-    });
-  };
+  const visibleSections =
+    selectedPriorityTab === 'todas'
+      ? SECTIONS
+      : SECTIONS.filter(s => s.key === selectedPriorityTab);
 
-  const myTasks = tasks.filter(t => t.assignedToCedula === currentUser.cedula);
-  const urgentTasks = tasks.filter(
-    t =>
-      t.status !== 'completada' &&
-      (t.priority === 'critica' ||
-        t.priority === 'alta' ||
-        new Date(t.dueDate).getTime() - nowTick <= 48 * 3600 * 1000)
-  );
-  const completedTasks = tasks.filter(t => t.status === 'completada');
+  const activeFilterCount =
+    (selectedPriorityTab !== 'todas' ? 1 : 0) +
+    (statusFilter !== 'todos' ? 1 : 0) +
+    (!showCompleted ? 1 : 0);
 
-  // Renderizado de cada cuadrito de tarea con la paleta ULEP (#B3D9FF, #FFFFFF y #0B2559)
-  const renderCollapsibleTaskBox = (task: TaskItem) => {
-    const isExpanded = Boolean(expandedTaskIds[task.id]);
-    const isCompleted = task.status === 'completada';
-    const isPasswordShown = Boolean(revealedPasswords[task.id]);
-    const countdown = formatCountdown(task.dueDate, task.status);
-
-    return (
-      <div
-        key={task.id}
-        className={`border rounded-xl transition-all overflow-hidden ${
-          isExpanded
-            ? 'border-[#0B2559] bg-white shadow-sm'
-            : 'border-[#B3D9FF] bg-white hover:border-[#7CC0FF]'
-        }`}
-      >
-        {/* Cabecera Minimalista: Actividad + Flecha */}
-        <div
-          onClick={() => toggleTaskExpand(task.id)}
-          className="flex items-center justify-between gap-3 px-4 py-3.5 cursor-pointer select-none hover:bg-[#F4F9FF] transition-colors"
-        >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                isCompleted ? 'bg-emerald-500' : countdown.overdue ? 'bg-rose-500' : 'bg-[#7CC0FF]'
-              }`}
-            />
-            <span
-              className={`text-sm truncate ${
-                isCompleted
-                  ? 'line-through text-[#0B2559]/50 font-normal'
-                  : 'font-bold text-[#0B2559]'
+  return (
+    <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>
+      {/* Barra Superior con el Botón Corredizo y el Botón Tipo Filtro */}
+      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs relative">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Botón Corredizo: Tareas Personales / Tareas del Grupo Empresarial */}
+          <div className="grid grid-cols-2 sm:inline-flex items-center p-1 bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl shadow-2xs w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setTaskScope('personales')}
+              className={`min-h-[42px] sm:min-h-0 px-3 sm:px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
+                taskScope === 'personales'
+                  ? 'bg-[#0B2559] text-white shadow-xs'
+                  : 'text-[#0B2559] hover:bg-[#B3D9FF]/40'
               }`}
             >
-              {task.title}
-            </span>
+              <i className="fi fi-rr-user text-xs shrink-0" />
+              <span className="truncate">Tareas Personales</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskScope('grupo')}
+              className={`min-h-[42px] sm:min-h-0 px-3 sm:px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
+                taskScope === 'grupo'
+                  ? 'bg-[#0B2559] text-white shadow-xs'
+                  : 'text-[#0B2559] hover:bg-[#B3D9FF]/40'
+              }`}
+            >
+              <i className="fi fi-rr-building text-xs shrink-0" />
+              <span className="truncate">
+                {isMobile ? 'Grupo Empresarial' : 'Tareas del Grupo Empresarial'}
+              </span>
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={e => {
-              e.stopPropagation();
-              toggleTaskExpand(task.id);
-            }}
-            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0 ${
-              isExpanded
-                ? 'bg-[#0B2559] text-white'
-                : 'bg-[#EAF3FF] text-[#0B2559] hover:bg-[#B3D9FF]'
-            }`}
-            title={isExpanded ? 'Ocultar detalles' : 'Ver toda la información de la tarea'}
-          >
-            <i
-              className={`fi ${
-                isExpanded ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'
-              } text-base`}
-            />
-          </button>
-        </div>
-
-        {/* Cuerpo Desplegable con Toda la Información Organizada */}
-        {isExpanded && (
-          <div className="px-5 pb-5 pt-4 border-t border-[#D6EAFF] bg-[#F4F9FF] space-y-4 text-xs">
-            {/* Fila 1: Estado, Prioridad y Botones de Acción Directa */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#D6EAFF]">
-              <div className="flex flex-wrap items-center gap-2 text-[#0B2559]">
-                <span
-                  className={`font-bold uppercase ${
-                    task.priority === 'critica'
-                      ? 'text-rose-700'
-                      : task.priority === 'alta'
-                      ? 'text-amber-700'
-                      : 'text-[#0B2559]'
-                  }`}
-                >
-                  Prioridad {task.priority}
+          {/* Botón Tipo Filtro Único */}
+          <div className="flex items-center justify-end gap-2 shrink-0 relative">
+            <button
+              type="button"
+              onClick={() => setFilterMenuOpen(prev => !prev)}
+              className={`min-h-[42px] sm:min-h-0 w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl border transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-2xs ${
+                filterMenuOpen || activeFilterCount > 0
+                  ? 'bg-[#0B2559] text-white border-[#0B2559]'
+                  : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#EAF3FF]'
+              }`}
+            >
+              <i className="fi fi-rr-filter text-xs" />
+              <span>Filtrar</span>
+              {activeFilterCount > 0 && (
+                <span className="px-1.5 py-0.5 text-[10px] font-mono rounded-full bg-[#B3D9FF] text-[#0B2559] font-bold">
+                  {activeFilterCount}
                 </span>
-                <span className="text-[#7CC0FF]">·</span>
-                <span className="font-bold">
-                  {task.status.replace('_', ' ').toUpperCase()} ({task.progress}%)
-                </span>
-                <span className="text-[#7CC0FF]">·</span>
-                <span>{task.category || 'Operaciones'}</span>
-                {task.tags && (
-                  <>
-                    <span className="text-[#7CC0FF]">·</span>
-                    <span className="text-[#3B82F6] font-medium">{task.tags}</span>
-                  </>
-                )}
-              </div>
+              )}
+              <i
+                className={`fi ${
+                  filterMenuOpen ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'
+                } text-sm`}
+              />
+            </button>
 
-              <div className="flex items-center gap-2">
-                {task.status !== 'completada' && (
-                  <button
-                    type="button"
-                    disabled={!currentUser.canEditTasks && currentUser.role !== 'admin'}
-                    onClick={() => handleQuickProgressChange(task, 100)}
-                    className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] hover:bg-[#99CCFF] rounded-lg flex items-center gap-1.5 disabled:opacity-40 transition-colors"
-                  >
-                    <i className="fi fi-rr-check-circle text-xs" /> Marcar Completada
-                  </button>
-                )}
-
-                {(currentUser.canEditTasks || currentUser.role === 'admin') && (
-                  <button
-                    type="button"
-                    onClick={() => onEditTask(task)}
-                    className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] hover:bg-[#EAF3FF] rounded-lg flex items-center gap-1.5 transition-colors"
-                  >
-                    <i className="fi fi-rr-edit text-xs" /> Editar
-                  </button>
-                )}
-
-                {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteTask(task)}
-                    className="px-3 py-1.5 text-xs font-bold text-rose-700 bg-white border border-rose-200 hover:bg-rose-50 rounded-lg flex items-center gap-1.5 transition-colors"
-                  >
-                    <i className="fi fi-rr-trash text-xs" /> Eliminar
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Fila 2: Quién asignó, Responsable y Tiempos de Cierre */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white p-3.5 rounded-xl border border-[#B3D9FF] tabular-nums">
-              <div>
-                <div className="text-[11px] text-[#3B82F6]">Responsable:</div>
-                <div className="font-bold text-[#0B2559]">{task.assignedToName}</div>
-                <div className="font-mono text-[11px] text-[#3B82F6]">C.C. {task.assignedToCedula}</div>
-              </div>
-              <div>
-                <div className="text-[11px] text-[#3B82F6]">Asignada por:</div>
-                <div className="font-bold text-[#0B2559]">{task.createdByName}</div>
-                <div className="font-mono text-[11px] text-[#3B82F6]">C.C. {task.createdByCedula}</div>
-              </div>
-              <div>
-                <div className="text-[11px] text-[#3B82F6]">Fecha de registro:</div>
-                <div className="font-bold text-[#0B2559]">
-                  {new Date(task.createdAt).toLocaleString('es-ES')}
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] text-[#3B82F6]">Fecha Límite / Cierre:</div>
-                <div className="font-bold text-[#0B2559]">
-                  {new Date(task.dueDate).toLocaleString('es-ES')}
-                </div>
-                <div
-                  className={`text-[11px] font-bold mt-0.5 ${
-                    countdown.overdue
-                      ? 'text-rose-600'
-                      : countdown.urgent
-                      ? 'text-amber-700'
-                      : 'text-emerald-700'
-                  }`}
-                >
-                  {countdown.text}
-                </div>
-              </div>
-            </div>
-
-            {/* Fila 3: Descripción y Notas */}
-            {(task.description || task.notes) && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {task.description && (
-                  <div className="p-3.5 bg-white rounded-xl border border-[#B3D9FF]">
-                    <div className="text-[11px] font-bold text-[#3B82F6] mb-1">Descripción:</div>
-                    <p className="text-[#0B2559] leading-relaxed whitespace-pre-line">{task.description}</p>
-                  </div>
-                )}
-                {task.notes && (
-                  <div className="p-3.5 bg-white rounded-xl border border-[#B3D9FF]">
-                    <div className="text-[11px] font-bold text-[#3B82F6] mb-1">Notas Operativas:</div>
-                    <p className="text-[#0B2559] leading-relaxed whitespace-pre-line">{task.notes}</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Fila 4: Credenciales (Correo, Clave) y Link Directo */}
-            {(task.accessEmail || task.accessPassword || task.directLink) && (
-              <div className="p-3.5 bg-white rounded-xl border border-[#B3D9FF] space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-bold text-[#0B2559] flex items-center gap-1.5">
-                    <i className="fi fi-rr-key text-xs text-[#3B82F6]" /> Credenciales de Acceso y Enlace de la Actividad
+            {/* Menú Desplegable del Botón Tipo Filtro */}
+            {filterMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-full sm:w-80 bg-white border border-[#B3D9FF] rounded-2xl shadow-xl p-4 z-30 space-y-4">
+                <div className="flex items-center justify-between border-b border-[#EAF3FF] pb-2.5">
+                  <span className="text-xs font-bold text-[#0B2559] flex items-center gap-1.5">
+                    <i className="fi fi-rr-filter text-xs text-[#3B82F6]" />
+                    Filtros de Lista de Chequeo
                   </span>
-                  {task.directLink && (
-                    <a
-                      href={task.directLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => handleOpenDirectLink(task)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] transition-colors"
+                  {activeFilterCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPriorityTab('todas');
+                        setStatusFilter('todos');
+                        setShowCompleted(true);
+                      }}
+                      className="text-[11px] font-bold text-rose-600 hover:underline"
                     >
-                      Entrar al Link Directo <i className="fi fi-rr-arrow-up-right-from-square text-[10px]" />
-                    </a>
+                      Restablecer
+                    </button>
                   )}
                 </div>
 
-                {(task.accessEmail || task.accessPassword) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 font-mono">
-                    {task.accessEmail && (
-                      <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#F4F9FF] rounded-lg border border-[#B3D9FF]">
-                        <span className="truncate text-[#0B2559]">Correo/Usuario: <strong>{task.accessEmail}</strong></span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopyText(task.accessEmail, `${task.id}_email`, 'correo de acceso', task.title)
-                          }
-                          className="p-1 text-[#0B2559] hover:bg-[#B3D9FF] rounded transition-colors"
-                          title="Copiar usuario"
-                        >
-                          <i
-                            className={`fi ${
-                              copiedId === `${task.id}_email` ? 'fi-rr-check text-emerald-600' : 'fi-rr-copy'
-                            } text-xs`}
-                          />
-                        </button>
-                      </div>
-                    )}
-
-                    {task.accessPassword && (
-                      <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#F4F9FF] rounded-lg border border-[#B3D9FF]">
-                        {canSeeVault ? (
-                          <>
-                            <span className="truncate text-[#0B2559]">
-                              Clave: <strong>{isPasswordShown ? task.accessPassword : '••••••••••••'}</strong>
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleRevealPassword(task)}
-                                className="p-1 text-[#0B2559] hover:bg-[#B3D9FF] rounded transition-colors"
-                                title="Mostrar / ocultar clave"
-                              >
-                                <i
-                                  className={`fi ${
-                                    isPasswordShown ? 'fi-rr-eye-crossed' : 'fi-rr-eye'
-                                  } text-xs`}
-                                />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleCopyText(
-                                    task.accessPassword,
-                                    `${task.id}_pass`,
-                                    'contraseña de tarea',
-                                    task.title
-                                  )
-                                }
-                                className="p-1 text-[#0B2559] hover:bg-[#B3D9FF] rounded transition-colors"
-                                title="Copiar clave"
-                              >
-                                <i
-                                  className={`fi ${
-                                    copiedId === `${task.id}_pass`
-                                      ? 'fi-rr-check text-emerald-600'
-                                      : 'fi-rr-copy'
-                                  } text-xs`}
-                                />
-                              </button>
-                            </div>
-                          </>
-                        ) : (
-                          <span className="text-amber-700 font-sans text-[11px]">
-                            Visualización restringida por el Administrador
-                          </span>
-                        )}
-                      </div>
-                    )}
+                {/* Resumen rápido de estado */}
+                <div className="p-2.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]/60 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-[#0B2559] font-medium tabular-nums">
+                    <span>Total: <strong>{totalScoped}</strong></span>
+                    <span>Inic.: <strong>{startedCount}</strong></span>
+                    <span className="text-amber-700">Proc.: <strong>{inProgressCount}</strong></span>
+                    <span className="text-emerald-700">Hechas: <strong>{completedCount}</strong></span>
                   </div>
-                )}
-              </div>
-            )}
-
-            {/* Fila 5: Selector de Porcentaje de Avance */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-bold text-[#0B2559] mr-1">Cambiar avance:</span>
-                {[0, 25, 50, 75, 100].map(pct => (
-                  <button
-                    key={pct}
-                    type="button"
-                    disabled={!currentUser.canEditTasks && currentUser.role !== 'admin'}
-                    onClick={() => handleQuickProgressChange(task, pct)}
-                    className={`px-2.5 py-1 text-[11px] font-mono font-bold rounded-md transition-colors ${
-                      task.progress === pct
-                        ? 'bg-[#0B2559] text-white'
-                        : 'bg-white text-[#0B2559] border border-[#B3D9FF] hover:bg-[#B3D9FF]/40'
-                    } disabled:opacity-40`}
-                  >
-                    {pct}%
-                  </button>
-                ))}
-              </div>
-
-              <div className="w-full sm:w-48 h-2.5 bg-[#D6EAFF] rounded-full overflow-hidden">
-                <div
-                  className="h-full transition-all duration-150 bg-[#0B2559]"
-                  style={{ width: `${task.progress}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // MÓDULO 2: CALENDARIO INTERACTIVO
-  if (activeSection === 'user_calendar') {
-    const handleAddCalendarEvent = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!newEvTitle.trim()) return;
-      const ev: CalendarEvent = {
-        id: cleanId(`ev_${Date.now()}`),
-        title: newEvTitle.trim(),
-        date: selectedDate,
-        time: newEvTime,
-        type: newEvType,
-        description: newEvDesc.trim(),
-        createdByCedula: currentUser.cedula,
-        createdByName: currentUser.name,
-        linkedTaskId: '',
-      };
-      await saveCalendarEventToFirestore(ev);
-      await recordAuditLog({
-        actorCedula: currentUser.cedula,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        actionType: 'CREAR_EVENTO_CALENDARIO',
-        module: 'CALENDARIO_SINCRONIZADO',
-        description: `Agendó el evento "${ev.title}" para la fecha ${ev.date} a las ${ev.time}.`,
-        targetId: ev.id,
-        severity: 'info'
-      });
-      setNewEvTitle('');
-      setNewEvDesc('');
-      setShowNewEventForm(false);
-    };
-
-    const handleDeleteEvent = async (ev: CalendarEvent) => {
-      await deleteCalendarEventFromFirestore(ev.id);
-      await recordAuditLog({
-        actorCedula: currentUser.cedula,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        actionType: 'ELIMINAR_EVENTO_CALENDARIO',
-        module: 'CALENDARIO_SINCRONIZADO',
-        description: `Eliminó el evento "${ev.title}" del calendario.`,
-        targetId: ev.id,
-        severity: 'warning'
-      });
-    };
-
-    const tasksOnSelectedDate = tasks.filter(t => t.dueDate.startsWith(selectedDate));
-    const eventsOnSelectedDate = calendarEvents.filter(ev => ev.date === selectedDate);
-
-    const upcomingDays = Array.from({ length: 7 }, (_, idx) => {
-      const d = new Date();
-      d.setDate(d.getDate() - 1 + idx);
-      const isoDate = d.toISOString().split('T')[0];
-      const dayTasksCount = tasks.filter(t => t.dueDate.startsWith(isoDate)).length;
-      const dayEventsCount = calendarEvents.filter(e => e.date === isoDate).length;
-      return {
-        isoDate,
-        dayName: d.toLocaleDateString('es-ES', { weekday: 'short' }),
-        dayNum: d.getDate(),
-        totalItems: dayTasksCount + dayEventsCount,
-      };
-    });
-
-    return (
-      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-6 space-y-6 shadow-2xs">
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-[#D6EAFF]">
-          <div>
-            <h2 className="text-base font-bold text-[#0B2559] flex items-center gap-2">
-              <i className="fi fi-rr-calendar text-sm text-[#3B82F6]" />
-              Calendario de Entregas y Actividades
-            </h2>
-            <p className="text-xs text-[#0B2559]/70">
-              Selecciona un día para ver sus tareas sincronizadas y haz clic en la flecha para desplegar los detalles.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={e => setSelectedDate(e.target.value)}
-              className="px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
-            />
-            <button
-              type="button"
-              onClick={() => setShowNewEventForm(!showNewEventForm)}
-              className="px-3.5 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] flex items-center gap-1.5 transition-colors"
-            >
-              <i className="fi fi-rr-plus text-xs" /> Nuevo Evento
-              <i className={`fi ${showNewEventForm ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'} text-sm`} />
-            </button>
-          </div>
-        </div>
-
-        {showNewEventForm && (
-          <form
-            onSubmit={handleAddCalendarEvent}
-            className="p-4 bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl grid grid-cols-1 sm:grid-cols-4 gap-3"
-          >
-            <input
-              type="text"
-              required
-              value={newEvTitle}
-              onChange={e => setNewEvTitle(e.target.value)}
-              placeholder="Título del evento..."
-              className="sm:col-span-2 px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-            />
-            <input
-              type="time"
-              required
-              value={newEvTime}
-              onChange={e => setNewEvTime(e.target.value)}
-              className="px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-            />
-            <select
-              value={newEvType}
-              onChange={e =>
-                setNewEvType(e.target.value as 'entrega' | 'reunion' | 'auditoria' | 'hito' | 'actividad')
-              }
-              className="px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-            >
-              <option value="actividad">Actividad General</option>
-              <option value="entrega">Entrega Clave</option>
-              <option value="reunion">Reunión de Equipo</option>
-              <option value="auditoria">Corte de Auditoría</option>
-              <option value="hito">Hito de Proyecto</option>
-            </select>
-            <input
-              type="text"
-              value={newEvDesc}
-              onChange={e => setNewEvDesc(e.target.value)}
-              placeholder="Notas o detalles adicionales..."
-              className="sm:col-span-3 px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-            />
-            <button
-              type="submit"
-              className="py-2 px-4 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] transition-colors"
-            >
-              Guardar en Calendario
-            </button>
-          </form>
-        )}
-
-        <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
-          {upcomingDays.map(day => {
-            const isSelected = day.isoDate === selectedDate;
-            return (
-              <button
-                key={day.isoDate}
-                type="button"
-                onClick={() => setSelectedDate(day.isoDate)}
-                className={`p-3 rounded-xl border text-center transition-colors ${
-                  isSelected
-                    ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
-                    : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#B3D9FF]/40'
-                }`}
-              >
-                <div className="text-[10px] uppercase opacity-75 font-semibold">{day.dayName}</div>
-                <div className="text-lg font-bold font-mono tabular-nums mt-0.5">{day.dayNum}</div>
-                <div className={`mt-1 text-[10px] font-mono tabular-nums font-bold ${isSelected ? 'text-[#B3D9FF]' : 'text-[#3B82F6]'}`}>
-                  {day.totalItems > 0 ? `${day.totalItems} act.` : 'Libre'}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="space-y-2.5">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-[#0B2559]">
-            Actividades del {selectedDate} ({tasksOnSelectedDate.length + eventsOnSelectedDate.length})
-          </h3>
-
-          {tasksOnSelectedDate.length === 0 && eventsOnSelectedDate.length === 0 ? (
-            <div className="py-10 text-center text-xs text-[#0B2559]/70 bg-[#F4F9FF] rounded-xl border border-[#B3D9FF]">
-              No hay entregas ni actividades programadas para este día.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {tasksOnSelectedDate.map(t => renderCollapsibleTaskBox(t))}
-
-              {eventsOnSelectedDate.map(ev => {
-                const isEvOpen = Boolean(expandedEventIds[ev.id]);
-                return (
-                  <div
-                    key={ev.id}
-                    className={`border rounded-xl bg-white overflow-hidden transition-all ${
-                      isEvOpen ? 'border-[#0B2559] shadow-2xs' : 'border-[#B3D9FF] hover:border-[#7CC0FF]'
-                    }`}
-                  >
-                    <div
-                      onClick={() => toggleEventExpand(ev.id)}
-                      className="flex items-center justify-between gap-3 px-4 py-3.5 cursor-pointer hover:bg-[#F4F9FF]"
-                    >
-                      <span className="text-sm font-bold text-[#0B2559] truncate">
-                        {ev.title}
-                      </span>
-                      <button
-                        type="button"
-                        className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                          isEvOpen ? 'bg-[#0B2559] text-white' : 'bg-[#EAF3FF] text-[#0B2559]'
-                        }`}
-                      >
-                        <i
-                          className={`fi ${
-                            isEvOpen ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'
-                          } text-base`}
-                        />
-                      </button>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-[#EAF3FF] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#0B2559] transition-all duration-300"
+                        style={{ width: `${completionPercent}%` }}
+                      />
                     </div>
-
-                    {isEvOpen && (
-                      <div className="px-4 pb-3.5 pt-2.5 border-t border-[#D6EAFF] bg-[#F4F9FF] flex items-center justify-between gap-3 text-xs">
-                        <div className="space-y-1">
-                          <div className="font-bold text-[#0B2559] uppercase">
-                            Evento ({ev.type}) · Hora: {ev.time} HRS · Creado por: {ev.createdByName}
-                          </div>
-                          {ev.description && <div className="text-[#0B2559]/90">{ev.description}</div>}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteEvent(ev)}
-                          className="px-2.5 py-1.5 text-xs font-bold text-rose-700 bg-white border border-rose-200 rounded-lg hover:bg-rose-50 shrink-0"
-                        >
-                          <i className="fi fi-rr-trash text-xs" /> Eliminar
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // MÓDULO 3: CHAT Y EQUIPO EN LÍNEA
-  if (activeSection === 'user_chat') {
-    const channelMessages = chatMessages.filter(m => m.channel === chatChannel);
-
-    const handleSendMessage = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!chatInput.trim()) return;
-      if (!currentUser.canSendChat && currentUser.role !== 'admin') return;
-
-      const textToSend = chatInput.trim();
-      setChatInput('');
-
-      await saveChatMessageToFirestore({
-        senderCedula: currentUser.cedula,
-        senderName: currentUser.name,
-        senderRole: currentUser.role,
-        text: textToSend,
-        channel: chatChannel,
-        relatedTaskId: linkedTaskChat,
-        timestamp: new Date().toISOString(),
-      });
-
-      await recordAuditLog({
-        actorCedula: currentUser.cedula,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        actionType: 'ENVIAR_MENSAJE_CHAT',
-        module: 'CHAT_COORDINACION',
-        description: `Envió mensaje en el canal #${chatChannel}: "${textToSend.slice(0, 80)}"`,
-        severity: 'info'
-      });
-    };
-
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <div className="lg:col-span-3 bg-white border border-[#B3D9FF] rounded-2xl p-4 space-y-4 shadow-2xs">
-          <div>
-            <h3 className="text-xs font-bold text-[#0B2559] uppercase tracking-wider mb-2">
-              Canales del Equipo
-            </h3>
-            <div className="space-y-1">
-              {(['general', 'entregas-urgentes', 'soporte-accesos'] as const).map(ch => (
-                <button
-                  key={ch}
-                  type="button"
-                  onClick={() => setChatChannel(ch)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold transition-colors ${
-                    chatChannel === ch
-                      ? 'bg-[#B3D9FF] text-[#0B2559]'
-                      : 'text-[#0B2559] hover:bg-[#F4F9FF]'
-                  }`}
-                >
-                  # {ch}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="pt-3 border-t border-[#D6EAFF]">
-            <h3 className="text-xs font-bold text-[#0B2559] uppercase tracking-wider mb-2">
-              Estado en Tiempo Real ({users.filter(u => u.isOnline).length}/{users.length} en línea)
-            </h3>
-            <div className="space-y-2">
-              {users.map(u => (
-                <div
-                  key={u.cedula}
-                  className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        u.isOnline ? 'bg-emerald-500' : 'bg-[#B3D9FF]'
-                      }`}
-                    />
-                    <span className="font-bold text-[#0B2559] truncate">{u.name}</span>
-                  </div>
-                  <span className={`text-[10px] font-bold shrink-0 ${u.isOnline ? 'text-emerald-700' : 'text-[#0B2559]/50'}`}>
-                    {u.isOnline ? 'En línea' : 'Off'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="lg:col-span-9 bg-white border border-[#B3D9FF] rounded-2xl flex flex-col h-[580px] overflow-hidden shadow-2xs">
-          <div className="px-5 py-3.5 border-b border-[#D6EAFF] bg-[#F4F9FF] flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-bold text-[#0B2559] flex items-center gap-2">
-              <i className="fi fi-rr-comments text-sm text-[#3B82F6]" /> Canal #{chatChannel}
-            </span>
-            <select
-              value={linkedTaskChat}
-              onChange={e => setLinkedTaskChat(e.target.value)}
-              className="px-3 py-1.5 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white max-w-xs truncate focus:outline-none focus:border-[#0B2559]"
-            >
-              <option value="">Vincular una tarea al mensaje (Opcional)...</option>
-              {tasks.map(t => (
-                <option key={t.id} value={t.id}>
-                  Tarea: {t.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex-1 p-5 overflow-y-auto space-y-3 bg-[#F4F9FF]/60">
-            {channelMessages.map(msg => {
-              const isMe = msg.senderCedula === currentUser.cedula;
-              const relatedTask = tasks.find(t => t.id === msg.relatedTaskId);
-              return (
-                <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                  <div className="flex items-center gap-1.5 text-[11px] text-[#0B2559]/70 mb-1 tabular-nums">
-                    <span className="font-bold text-[#0B2559]">{msg.senderName}</span>
-                    <span>·</span>
-                    <span>
-                      {new Date(msg.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                    <span className="text-[10px] font-mono font-bold text-[#0B2559] tabular-nums">
+                      {completionPercent}%
                     </span>
                   </div>
-                  <div
-                    className={`max-w-xl px-4 py-2.5 rounded-2xl text-xs leading-relaxed ${
-                      isMe
-                        ? 'bg-[#0B2559] text-white'
-                        : 'bg-white text-[#0B2559] border border-[#B3D9FF]'
-                    }`}
-                  >
-                    {relatedTask && (
-                      <div
-                        className={`text-[11px] font-bold pb-1 mb-1 border-b ${
-                          isMe ? 'border-[#B3D9FF]/30 text-[#B3D9FF]' : 'border-[#D6EAFF] text-[#3B82F6]'
-                        }`}
-                      >
-                        Ref: {relatedTask.title} ({relatedTask.progress}%)
-                      </div>
-                    )}
-                    <div>{msg.text}</div>
+                </div>
+
+                {/* Filtrar por Importancia */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#0B2559]/70">
+                    Por Importancia
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPriorityTab('todas')}
+                      className={`col-span-2 px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between transition-colors ${
+                        selectedPriorityTab === 'todas'
+                          ? 'bg-[#0B2559] text-white'
+                          : 'bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF]'
+                      }`}
+                    >
+                      <span>Todas las prioridades</span>
+                      <span className="font-mono text-[11px] opacity-80">({scopedTasks.length})</span>
+                    </button>
+                    {SECTIONS.map(sec => {
+                      const count = scopedTasks.filter(
+                        t => t.priority === sec.key && (showCompleted || t.status !== 'completada')
+                      ).length;
+                      const isSelected = selectedPriorityTab === sec.key;
+                      return (
+                        <button
+                          key={sec.key}
+                          type="button"
+                          onClick={() => setSelectedPriorityTab(sec.key)}
+                          className={`px-2.5 py-2 rounded-xl text-xs font-bold flex items-center justify-between gap-1.5 transition-colors ${
+                            isSelected
+                              ? 'bg-[#0B2559] text-white'
+                              : 'bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF]'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 truncate">
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${sec.dotColor}`} />
+                            <span className="truncate">{sec.shortName}</span>
+                          </span>
+                          <span className="font-mono text-[11px] opacity-80">({count})</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              );
-            })}
+
+                {/* Filtrar por Estado */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[#0B2559]/70">
+                    Por Estado
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {([
+                      { id: 'todos', label: 'Todos' },
+                      { id: 'pendiente', label: 'Iniciadas' },
+                      { id: 'en_progreso', label: 'En proceso' },
+                      { id: 'completada', label: 'Hechas' },
+                    ] as const).map(st => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => {
+                          setStatusFilter(st.id);
+                          if (st.id === 'completada') setShowCompleted(true);
+                        }}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                          statusFilter === st.id
+                            ? 'bg-[#0B2559] text-white'
+                            : 'bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF]'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Ocultar/Ver hechas y Vista en PC/Tablet */}
+                <div className="pt-2 border-t border-[#EAF3FF] flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCompleted(!showCompleted)}
+                    className={`flex-1 px-3 py-2 text-xs font-bold rounded-xl border transition-colors ${
+                      showCompleted
+                        ? 'bg-[#EAF3FF] text-[#0B2559] border-[#B3D9FF]'
+                        : 'bg-white text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    {showCompleted ? 'Ocultar hechas' : 'Ver hechas'}
+                  </button>
+
+                  {!isMobile && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDesktopGridLayout(prev => (prev === 'stack' ? 'grid' : 'stack'))
+                      }
+                      className="px-3 py-2 text-xs font-bold rounded-xl bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF] flex items-center gap-1.5"
+                    >
+                      <i
+                        className={`fi ${
+                          desktopGridLayout === 'grid' ? 'fi-rr-list' : 'fi-rr-apps'
+                        } text-xs`}
+                      />
+                      <span>{desktopGridLayout === 'grid' ? 'Vista Lista' : '2 Columnas'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFilterMenuOpen(false)}
+                  className="w-full py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] hover:bg-[#99CCFF] rounded-xl transition-colors"
+                >
+                  Aplicar y Cerrar
+                </button>
+              </div>
+            )}
           </div>
-
-          <form onSubmit={handleSendMessage} className="p-3.5 border-t border-[#D6EAFF] flex items-center gap-2 bg-white">
-            <input
-              type="text"
-              disabled={!currentUser.canSendChat && currentUser.role !== 'admin'}
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              placeholder={
-                currentUser.canSendChat || currentUser.role === 'admin'
-                  ? `Escribe un mensaje al equipo en #${chatChannel}...`
-                  : 'Permiso de chat deshabilitado por el Administrador.'
-              }
-              className="flex-1 px-4 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-full bg-[#F4F9FF] focus:bg-white focus:outline-none focus:border-[#0B2559]"
-            />
-            <button
-              type="submit"
-              disabled={!currentUser.canSendChat && currentUser.role !== 'admin'}
-              className="px-5 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-full hover:bg-[#99CCFF] transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-40"
-            >
-              <i className="fi fi-rr-paper-plane text-xs" /> Enviar
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  // MÓDULO 1 (PRINCIPAL): BANDEJA UNIFICADA CON PALETA ULEP (#B3D9FF, #FFFFFF y #0B2559)
-  let sourceList: TaskItem[] = myTasks;
-  if (inboxScope === 'mis_tareas') sourceList = myTasks;
-  else if (inboxScope === 'equipo') sourceList = tasks;
-  else if (inboxScope === 'urgentes') sourceList = urgentTasks;
-  else if (inboxScope === 'completadas') sourceList = completedTasks;
-
-  const filteredTasks = sourceList.filter(t => {
-    const q = searchQuery.toLowerCase();
-    return (
-      !q ||
-      t.title.toLowerCase().includes(q) ||
-      t.assignedToName.toLowerCase().includes(q) ||
-      t.tags.toLowerCase().includes(q) ||
-      t.category.toLowerCase().includes(q)
-    );
-  });
-
-  return (
-    <div className="bg-white border border-[#B3D9FF] rounded-2xl overflow-hidden shadow-2xs">
-      {/* Cabecera Unificada: Buscador + Botones de Acción */}
-      <div className="p-4 bg-[#F4F9FF] border-b border-[#B3D9FF] flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-xl">
-          <i className="fi fi-rr-search text-xs text-[#3B82F6] absolute left-4 top-2.5" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Buscar actividad por nombre, responsable o etiqueta..."
-            className="w-full pl-10 pr-4 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-full focus:outline-none focus:border-[#0B2559]"
-          />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {(currentUser.canExportReports || currentUser.role === 'admin') && (
-            <button
-              type="button"
-              onClick={handleDownloadMonthlyPDF}
-              className="px-3.5 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#EAF3FF] flex items-center gap-1.5 transition-colors"
-            >
-              <i className="fi fi-rr-file-pdf text-xs text-[#3B82F6]" /> Reporte Mensual PDF
-            </button>
-          )}
-
-          {(currentUser.canCreateTasks || currentUser.role === 'admin') && (
-            <button
-              type="button"
-              onClick={onOpenNewTask}
-              className="px-4 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-xl hover:bg-[#99CCFF] flex items-center gap-1.5 transition-colors shadow-2xs"
-            >
-              <i className="fi fi-rr-plus text-xs" /> Nueva Tarea
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Pestañas Simples con Paleta ULEP */}
-      <div className="flex items-center overflow-x-auto px-4 border-b border-[#D6EAFF] bg-white">
-        <button
-          type="button"
-          onClick={() => setInboxScope('mis_tareas')}
-          className={`flex items-center gap-2 px-5 py-3.5 text-xs font-bold border-b-2 transition-colors whitespace-nowrap ${
-            inboxScope === 'mis_tareas'
-              ? 'border-[#0B2559] text-[#0B2559] bg-[#F4F9FF]'
-              : 'border-transparent text-[#0B2559]/70 hover:bg-[#F4F9FF]/60'
-          }`}
-        >
-          <i className="fi fi-rr-inbox-in text-xs text-[#3B82F6]" />
-          Mis Tareas ({myTasks.length})
-        </button>
+      {/* Secciones de la Lista Ordenadas por Importancia */}
+      <div
+        className={
+          !isMobile && desktopGridLayout === 'grid' && visibleSections.length > 1
+            ? 'grid grid-cols-1 lg:grid-cols-2 gap-4 items-start'
+            : 'space-y-3.5'
+        }
+      >
+        {visibleSections.map(sec => {
+          const allSectionTasks = scopedTasks.filter(t => t.priority === sec.key);
+          const activeTasks = allSectionTasks.filter(t => t.status !== 'completada');
+          const doneTasks = allSectionTasks.filter(t => t.status === 'completada');
+          const baseTasks = showCompleted ? [...activeTasks, ...doneTasks] : activeTasks;
+          const displayTasks =
+            statusFilter === 'todos'
+              ? baseTasks
+              : baseTasks.filter(t => t.status === statusFilter);
 
-        <button
-          type="button"
-          onClick={() => setInboxScope('urgentes')}
-          className={`flex items-center gap-2 px-5 py-3.5 text-xs font-bold border-b-2 transition-colors whitespace-nowrap ${
-            inboxScope === 'urgentes'
-              ? 'border-[#0B2559] text-[#0B2559] bg-[#F4F9FF]'
-              : 'border-transparent text-[#0B2559]/70 hover:bg-[#F4F9FF]/60'
-          }`}
-        >
-          <i className="fi fi-rr-alarm-exclamation text-xs text-rose-500" />
-          Alertas Prioridad y Cierre ({urgentTasks.length})
-        </button>
+          const inputValue = quickInputs[sec.key] || '';
+          const isQuickInputVisible = !isMobile || mobileQuickAddOpen[sec.key];
 
-        <button
-          type="button"
-          onClick={() => setInboxScope('equipo')}
-          className={`flex items-center gap-2 px-5 py-3.5 text-xs font-bold border-b-2 transition-colors whitespace-nowrap ${
-            inboxScope === 'equipo'
-              ? 'border-[#0B2559] text-[#0B2559] bg-[#F4F9FF]'
-              : 'border-transparent text-[#0B2559]/70 hover:bg-[#F4F9FF]/60'
-          }`}
-        >
-          <i className="fi fi-rr-list-check text-xs text-[#3B82F6]" />
-          Tareas de Todos ({tasks.length})
-        </button>
+          return (
+            <div
+              key={sec.key}
+              className={`bg-white border ${sec.borderColor} rounded-2xl overflow-hidden shadow-2xs`}
+            >
+              {/* Encabezado limpio de la sección */}
+              <div
+                className={`${sec.accentBg} px-4 py-2.5 border-b ${sec.borderColor} flex items-center justify-between gap-3`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${sec.dotColor}`} />
+                  <span className="text-xs font-bold text-[#0B2559] truncate">
+                    {sec.name}
+                  </span>
+                  <span className="text-[11px] text-[#0B2559]/70 font-medium tabular-nums whitespace-nowrap">
+                    · {activeTasks.length} pend.{doneTasks.length > 0 ? ` / ${doneTasks.length} hechas` : ''}
+                  </span>
+                </div>
 
-        <button
-          type="button"
-          onClick={() => setInboxScope('completadas')}
-          className={`flex items-center gap-2 px-5 py-3.5 text-xs font-bold border-b-2 transition-colors whitespace-nowrap ${
-            inboxScope === 'completadas'
-              ? 'border-[#0B2559] text-[#0B2559] bg-[#F4F9FF]'
-              : 'border-transparent text-[#0B2559]/70 hover:bg-[#F4F9FF]/60'
-          }`}
-        >
-          <i className="fi fi-rr-check-circle text-xs text-emerald-600" />
-          Completadas y Avance ({completedTasks.length}/{tasks.length})
-        </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isMobile) {
+                      setMobileQuickAddOpen(prev => ({
+                        ...prev,
+                        [sec.key]: !prev[sec.key],
+                      }));
+                      setTimeout(() => {
+                        const el = document.getElementById(`input_${sec.key}`);
+                        if (el) el.focus();
+                      }, 50);
+                    } else {
+                      const el = document.getElementById(`input_${sec.key}`);
+                      if (el) el.focus();
+                    }
+                  }}
+                  className={`min-h-[36px] sm:min-h-0 text-[11px] font-bold px-3 py-1 rounded-lg transition-colors shrink-0 whitespace-nowrap ${sec.buttonBg}`}
+                >
+                  + Agregar
+                </button>
+              </div>
+
+              {/* Items de la lista ordenados */}
+              <div className="divide-y divide-[#F4F9FF]">
+                {displayTasks.length === 0 ? (
+                  <div className="py-4 px-4 text-center text-xs text-slate-400">
+                    {allSectionTasks.length === 0
+                      ? 'Sin tareas en esta categoría.'
+                      : '¡Todas las tareas de esta categoría están hechas!'}
+                  </div>
+                ) : (
+                  displayTasks.map(task => {
+                    const isDone = task.status === 'completada';
+                    const isInProgress = task.status === 'en_progreso';
+                    const isStarted = task.status === 'pendiente';
+
+                    return (
+                      <div
+                        key={task.id}
+                        className={`px-3.5 sm:px-4 py-3 sm:py-2.5 transition-colors group ${
+                          isDone ? 'bg-slate-50/70' : 'hover:bg-[#F4F9FF]'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          {/* Casilla de verificación táctil y Nombre (Clic para ver detalles en solo lectura) */}
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleCheck(task)}
+                              className={`w-6 h-6 sm:w-5 sm:h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                                isDone
+                                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                                  : 'bg-white border-[#B3D9FF] hover:border-[#0B2559] text-transparent'
+                              }`}
+                              title={isDone ? 'Marcar como iniciada' : 'Marcar como hecha'}
+                            >
+                              <i className="fi fi-rr-check text-[10px] font-bold" />
+                            </button>
+
+                            <div
+                              onClick={() => setViewingTask(task)}
+                              className="min-w-0 flex-1 cursor-pointer select-none"
+                              title="Haz clic para ver los detalles de la tarea (Solo lectura)"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-xs sm:text-xs truncate transition-all ${
+                                    isDone
+                                      ? 'line-through text-slate-400 font-normal'
+                                      : isInProgress
+                                      ? 'text-[#0B2559] font-bold'
+                                      : 'text-[#0B2559] font-semibold'
+                                  }`}
+                                >
+                                  {task.title}
+                                </span>
+                              </div>
+
+                              {/* En PC y Tablet se muestra información adicional en línea; en Teléfono se oculta para que se vea más sencilla */}
+                              {!isMobile && (
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#3B82F6] mt-0.5 tabular-nums">
+                                  <span>{task.assignedToName}</span>
+                                  {task.dueDate && (
+                                    <>
+                                      <span>·</span>
+                                      <span>Vence: {task.dueDate.split('T')[0]}</span>
+                                    </>
+                                  )}
+                                  {(task.accessEmail || task.directLink) && (
+                                    <>
+                                      <span>·</span>
+                                      <span className="text-[#0B2559] font-medium">
+                                        Incluye credenciales/link
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Botones de Estado Cliqueables: Iniciada, En proceso, Hecha + Ver + Eliminar */}
+                          <div className="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pl-9 sm:pl-0">
+                            <div className="inline-flex items-center p-0.5 rounded-lg bg-[#F4F9FF] border border-[#B3D9FF]/70">
+                              <button
+                                type="button"
+                                onClick={() => handleSetStatus(task, 'pendiente')}
+                                className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-[11px] font-bold rounded-md transition-all whitespace-nowrap ${
+                                  isStarted
+                                    ? 'bg-[#0B2559] text-white shadow-2xs'
+                                    : 'text-[#0B2559]/70 hover:text-[#0B2559]'
+                                }`}
+                                title="Marcar como Iniciada"
+                              >
+                                Iniciada
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSetStatus(task, 'en_progreso')}
+                                className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-[11px] font-bold rounded-md transition-all whitespace-nowrap ${
+                                  isInProgress
+                                    ? 'bg-amber-500 text-white shadow-2xs'
+                                    : 'text-amber-800/80 hover:text-amber-900'
+                                }`}
+                                title="Marcar como En proceso"
+                              >
+                                En proceso
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSetStatus(task, 'completada')}
+                                className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-[11px] font-bold rounded-md transition-all whitespace-nowrap ${
+                                  isDone
+                                    ? 'bg-emerald-600 text-white shadow-2xs'
+                                    : 'text-emerald-700/80 hover:text-emerald-800'
+                                }`}
+                                title="Marcar como Hecha"
+                              >
+                                ✓ Hecha
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              {/* Botón Ver Detalles (Solo Lectura) */}
+                              <button
+                                type="button"
+                                onClick={() => setViewingTask(task)}
+                                className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-500 hover:text-[#0B2559] hover:bg-[#EAF3FF] rounded-lg transition-colors flex items-center justify-center"
+                                title="Ver detalles de la tarea (Solo lectura)"
+                              >
+                                <i className="fi fi-rr-eye text-xs" />
+                              </button>
+
+                              {/* Botón Eliminar (si tiene permisos) */}
+                              {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(task)}
+                                  className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors flex items-center justify-center"
+                                  title="Eliminar tarea"
+                                >
+                                  <i className="fi fi-rr-trash text-xs" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Input rápido al pie de la sección (En PC/Tablet siempre visible; en Teléfono desplegable con "+ Agregar") */}
+              {isQuickInputVisible && (
+                <div className="p-2.5 bg-[#FAFDFE] border-t border-[#EAF3FF]">
+                  <form
+                    onSubmit={e => {
+                      e.preventDefault();
+                      handleAddQuick(sec.key);
+                    }}
+                    className="flex items-center gap-2"
+                  >
+                    <input
+                      id={`input_${sec.key}`}
+                      type="text"
+                      value={inputValue}
+                      onChange={e =>
+                        setQuickInputs(prev => ({
+                          ...prev,
+                          [sec.key]: e.target.value,
+                        }))
+                      }
+                      placeholder={`+ Escribe una tarea en ${sec.name.toLowerCase()}...`}
+                      className="flex-1 min-h-[40px] sm:min-h-0 px-3 py-1.5 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!inputValue.trim()}
+                      className={`min-h-[40px] sm:min-h-0 px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors shrink-0 disabled:opacity-30 ${sec.buttonBg}`}
+                    >
+                      Guardar
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {/* Lista Limpia de Cuadritos de Tareas */}
-      <div className="p-4 space-y-2 bg-[#F4F9FF] min-h-[460px]">
-        {filteredTasks.length === 0 ? (
-          <div className="py-16 text-center space-y-2">
-            <i className="fi fi-rr-inbox text-2xl text-[#B3D9FF]" />
-            <p className="text-sm font-bold text-[#0B2559]">No hay actividades en esta pestaña</p>
-            <p className="text-xs text-[#0B2559]/70">
-              Cambia de pestaña arriba o haz clic en "Nueva Tarea" para registrar una actividad.
-            </p>
+      {/* MODAL DE VISTA EXCLUSIVA (SOLO LECTURA, NO EDITABLE - Bottom Sheet en Teléfono / Modal en PC y Tablet) */}
+      {viewingTask && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/50 backdrop-blur-xs">
+          <div className="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl shadow-xl border border-[#B3D9FF] overflow-hidden max-h-[90vh] flex flex-col">
+            {/* Barra de arrastre visual para Teléfono */}
+            <div className="sm:hidden pt-2.5 pb-1 bg-[#F4F9FF] flex justify-center">
+              <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]" />
+            </div>
+
+            {/* Cabecera del Visor */}
+            <div className="px-5 py-3.5 sm:py-4 bg-[#F4F9FF] border-b border-[#D6EAFF] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-[#0B2559] text-white flex items-center justify-center">
+                  <i className="fi fi-rr-eye text-xs" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-[#0B2559]">Detalle de la Actividad</h3>
+                  <p className="text-[10px] text-[#3B82F6]">Vista de consulta rápida (No editable)</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingTask(null)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-[#0B2559] hover:bg-[#EAF3FF] transition-colors"
+              >
+                <i className="fi fi-rr-cross-small text-base" />
+              </button>
+            </div>
+
+            {/* Contenido en Solo Lectura */}
+            <div className="p-5 space-y-4 text-xs overflow-y-auto">
+              {/* Título */}
+              <div>
+                <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
+                  Nombre de la Tarea
+                </label>
+                <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] font-bold text-[#0B2559] text-sm">
+                  {viewingTask.title}
+                </div>
+              </div>
+
+              {/* Botones de Cambio Rápido de Estado */}
+              <div>
+                <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1.5">
+                  Estado de la Actividad (Haz clic para cambiar)
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSetStatus(viewingTask, 'pendiente')}
+                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
+                      viewingTask.status === 'pendiente'
+                        ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
+                        : 'bg-white text-[#0B2559] border-[#B3D9FF] hover:bg-[#F4F9FF]'
+                    }`}
+                  >
+                    <span>Iniciada</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSetStatus(viewingTask, 'en_progreso')}
+                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
+                      viewingTask.status === 'en_progreso'
+                        ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
+                        : 'bg-white text-amber-900 border-amber-200 hover:bg-amber-50'
+                    }`}
+                  >
+                    <span>En proceso</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSetStatus(viewingTask, 'completada')}
+                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
+                      viewingTask.status === 'completada'
+                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                        : 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50'
+                    }`}
+                  >
+                    <span>✓ Hecha</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Datos de la Tarea (Prioridad, Fechas, Responsable) */}
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 tabular-nums">
+                <div>
+                  <span className="text-slate-500">Nivel de Importancia:</span>
+                  <div className="font-bold text-[#0B2559] capitalize mt-0.5">
+                    {viewingTask.priority}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-slate-500">Fecha Límite:</span>
+                  <div className="font-bold text-[#0B2559] mt-0.5">
+                    {viewingTask.dueDate ? viewingTask.dueDate.split('T')[0] : 'Sin fecha'}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-slate-500">Responsable Asignado:</span>
+                  <div className="font-bold text-[#0B2559] mt-0.5">
+                    {viewingTask.assignedToName || 'No asignado'}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-slate-500">Creado Por:</span>
+                  <div className="font-bold text-[#0B2559] mt-0.5">
+                    {viewingTask.createdByName || 'Sistema'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Descripción o Notas (si existen) */}
+              {(viewingTask.description || viewingTask.notes) && (
+                <div className="space-y-2">
+                  {viewingTask.description && (
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
+                        Descripción
+                      </label>
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] whitespace-pre-wrap">
+                        {viewingTask.description}
+                      </div>
+                    </div>
+                  )}
+                  {viewingTask.notes && (
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
+                        Notas y Observaciones
+                      </label>
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] whitespace-pre-wrap">
+                        {viewingTask.notes}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Credenciales y Link Directo (si existen) */}
+              {(viewingTask.accessEmail || viewingTask.accessPassword || viewingTask.directLink) && (
+                <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2">
+                  <div className="text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
+                    Credenciales y Enlace Directo
+                  </div>
+                  {viewingTask.accessEmail && (
+                    <div className="font-mono text-xs text-[#0B2559]">
+                      Usuario / Correo: <strong>{viewingTask.accessEmail}</strong>
+                    </div>
+                  )}
+                  {viewingTask.accessPassword && (currentUser.role === 'admin' || currentUser.canViewVault) && (
+                    <div className="font-mono text-xs text-[#0B2559]">
+                      Contraseña: <strong>{viewingTask.accessPassword}</strong>
+                    </div>
+                  )}
+                  {viewingTask.directLink && (
+                    <a
+                      href={viewingTask.directLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0B2559] text-white font-bold text-xs hover:bg-[#15397A] transition-colors"
+                    >
+                      <span>Abrir Link Directo</span>
+                      <i className="fi fi-rr-arrow-up-right-from-square text-[10px]" />
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Pie del Visor */}
+            <div className="px-5 py-3 bg-[#F4F9FF] border-t border-[#D6EAFF] flex items-center justify-between gap-2">
+              {(currentUser.canDeleteTasks || currentUser.role === 'admin') ? (
+                <button
+                  type="button"
+                  onClick={() => handleDelete(viewingTask)}
+                  className="min-h-[40px] px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl flex items-center gap-1.5 transition-colors"
+                >
+                  <i className="fi fi-rr-trash text-xs" />
+                  <span>Eliminar Tarea</span>
+                </button>
+              ) : (
+                <div />
+              )}
+              <button
+                type="button"
+                onClick={() => setViewingTask(null)}
+                className="min-h-[40px] px-5 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-xl transition-colors"
+              >
+                Cerrar Vista
+              </button>
+            </div>
           </div>
-        ) : (
-          filteredTasks.map(task => renderCollapsibleTaskBox(task))
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

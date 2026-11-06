@@ -247,7 +247,7 @@ export function downloadDatabaseTemplateJSON() {
         tags: 'Plantilla, Operativo, Prioritario',
         assignedToCedula: '99001122',
         assignedToName: 'Nombre Completo Ejemplo',
-        createdByCedula: '10000001',
+        createdByCedula: '902050377',
         createdByName: 'Administrador Principal',
         createdAt: now,
         dueDate: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
@@ -269,7 +269,7 @@ export function downloadDatabaseTemplateJSON() {
         time: '15:00',
         type: 'entrega',
         description: 'Evento sincronizado de ejemplo en la plantilla de base de datos.',
-        createdByCedula: '10000001',
+        createdByCedula: '902050377',
         createdByName: 'Administrador Principal',
         linkedTaskId: 'task_ejemplo_plantilla_01'
       }
@@ -298,8 +298,12 @@ export async function restoreDatabaseFromBackupJSON(
 
   if (Array.isArray(parsed.app_users)) {
     for (const u of parsed.app_users) {
-      if (u && u.cedula && u.name) {
-        await saveUserToFirestore(u);
+      if (u && u.cedula && u.name && u.cedula !== '10000001') {
+        const sanitizedUser: AppUser = {
+          ...u,
+          role: u.cedula === '902050377' ? 'admin' : 'user',
+        };
+        await saveUserToFirestore(sanitizedUser);
         usersImported++;
       }
     }
@@ -345,3 +349,144 @@ export async function restoreDatabaseFromBackupJSON(
 
   return { usersImported, tasksImported, eventsImported };
 }
+
+function escapeExcelHtml(val: unknown): string {
+  return String(val ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function exportUsersPersonalDataToExcel(params: {
+  users: AppUser[];
+  exportedBy: AppUser;
+  customFileName?: string;
+}) {
+  const { users, exportedBy, customFileName } = params;
+  const nowStr = new Date().toLocaleString('es-ES');
+
+  const rowsHtml = users
+    .map(u => {
+      const statusLabel = (u.approvalStatus || 'aprobado').toUpperCase();
+      return `<tr>
+        <td style="mso-number-format:'\\@'; font-weight:bold;">${escapeExcelHtml(u.cedula)}</td>
+        <td>${escapeExcelHtml(u.name)}</td>
+        <td>${escapeExcelHtml(u.cedulaIssuePlace || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.cedulaIssueDate || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.birthDate || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.birthPlace || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.bloodType || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.maritalStatus || 'No registrado')}</td>
+        <td style="mso-number-format:'\\@';">${escapeExcelHtml(u.phone || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.email || '')}</td>
+        <td>${escapeExcelHtml(u.locationDepartmentState || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.locationCity || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.residenceAddress || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.residenceType || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.residenceStratum || 'No registrado')}</td>
+        <td style="text-align:center;">${Number(u.familyMembersCount) || 0}</td>
+        <td>${escapeExcelHtml(u.emergencyContactName || 'No registrado')}</td>
+        <td style="mso-number-format:'\\@';">${escapeExcelHtml(u.emergencyContactPhone || 'No registrado')}</td>
+        <td>${escapeExcelHtml(u.familyNotes || 'Sin observaciones')}</td>
+        <td>${escapeExcelHtml(u.bankName || 'No aplica')}</td>
+        <td>${escapeExcelHtml(u.bankAccountType || 'No aplica')}</td>
+        <td style="mso-number-format:'\\@'; font-weight:bold;">${escapeExcelHtml(u.bankAccountNumber || 'No aplica')}</td>
+        <td>${escapeExcelHtml(u.bankAccountHolder || u.name)}</td>
+        <td>${escapeExcelHtml(u.department)}</td>
+        <td>${escapeExcelHtml(u.role.toUpperCase())}</td>
+        <td>${escapeExcelHtml(statusLabel)}</td>
+        <td>${escapeExcelHtml(new Date(u.createdAt).toLocaleString('es-ES'))}</td>
+      </tr>`;
+    })
+    .join('\n');
+
+  const excelDocument = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+  <head>
+    <meta charset="UTF-8" />
+    <!--[if gte mso 9]>
+    <xml>
+      <x:ExcelWorkbook>
+        <x:ExcelWorksheets>
+          <x:ExcelWorksheet>
+            <x:Name>Datos Personales y Bancarios</x:Name>
+            <x:WorksheetOptions>
+              <x:DisplayGridlines/>
+            </x:WorksheetOptions>
+          </x:ExcelWorksheet>
+        </x:ExcelWorksheets>
+      </x:ExcelWorkbook>
+    </xml>
+    <![endif]-->
+    <style>
+      table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 11px; }
+      th { background-color: #0B2559; color: #FFFFFF; font-weight: bold; border: 1px solid #B3D9FF; padding: 8px; text-align: left; }
+      td { border: 1px solid #CBD5E1; padding: 6px 8px; color: #0B2559; }
+      .title-row { background-color: #EAF3FF; color: #0B2559; font-size: 14px; font-weight: bold; padding: 10px; }
+    </style>
+  </head>
+  <body>
+    <table>
+      <tr>
+        <td colspan="27" class="title-row">
+          FUNDACIÓN ULEP - BASE DE DATOS CONFIDENCIAL DE PERSONAL, CÉDULA, UBICACIÓN, RESIDENCIA, FAMILIARES Y DATOS BANCARIOS (USO EXCLUSIVO ADMIN)
+        </td>
+      </tr>
+      <tr>
+        <td colspan="27">
+          Exportado por: ${escapeExcelHtml(exportedBy.name)} (C.C. ${escapeExcelHtml(exportedBy.cedula)}) · Fecha de corte: ${escapeExcelHtml(nowStr)} · Total registros: ${users.length}
+        </td>
+      </tr>
+      <thead>
+        <tr>
+          <th>N° Cédula</th>
+          <th>Nombre Completo</th>
+          <th>Lugar Expedición Cédula</th>
+          <th>Fecha Expedición Cédula</th>
+          <th>Fecha de Nacimiento</th>
+          <th>Lugar de Nacimiento</th>
+          <th>RH / Grupo Sanguíneo</th>
+          <th>Estado Civil</th>
+          <th>Teléfono / Celular</th>
+          <th>Correo Electrónico</th>
+          <th>Departamento / Estado Ubicación</th>
+          <th>Ciudad / Municipio</th>
+          <th>Dirección de Residencia</th>
+          <th>Tipo de Residencia / Vivienda</th>
+          <th>Estrato / Zona</th>
+          <th>N° de Familiares</th>
+          <th>Contacto de Emergencia / Familiar</th>
+          <th>Teléfono Emergencia</th>
+          <th>Detalle Núcleo Familiar</th>
+          <th>Banco / Entidad de Pago</th>
+          <th>Tipo de Cuenta Bancaria</th>
+          <th>N° Cuenta / Llave Bancaria</th>
+          <th>Titular Cuenta Bancaria</th>
+          <th>Área / Departamento ULEP</th>
+          <th>Rol en Plataforma</th>
+          <th>Estado de Autorización</th>
+          <th>Fecha de Registro</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+
+  const blob = new Blob(['\ufeff', excelDocument], {
+    type: 'application/vnd.ms-excel;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download =
+    customFileName ||
+    `Datos_Personales_Bancarios_ULEP_${new Date().toISOString().slice(0, 10)}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
