@@ -15,7 +15,9 @@ import {
   saveTaskToFirestore,
   saveCalendarEventToFirestore,
   recordAuditLog,
-  cleanId
+  cleanId,
+  readPermanentVault,
+  syncCollectionToPermanentVault,
 } from './firebase';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { AdminViews } from './components/AdminViews';
@@ -50,20 +52,25 @@ import {
 import { SearchableLocationSelect } from './components/SearchableLocationSelect';
 
 export default function App() {
-  const [users, setUsers] = useState<AppUser[]>([]);
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
-  const [loadingData, setLoadingData] = useState(true);
+  const [users, setUsers] = useState<AppUser[]>(() => Object.values(readPermanentVault().users));
+  const [tasks, setTasks] = useState<TaskItem[]>(() => Object.values(readPermanentVault().tasks));
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() =>
+    Object.values(readPermanentVault().auditLogs).sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    )
+  );
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
+    Object.values(readPermanentVault().chatMessages).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    )
+  );
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() =>
+    Object.values(readPermanentVault().calendarEvents)
+  );
+  const [loadingData, setLoadingData] = useState(() => Object.keys(readPermanentVault().users).length === 0);
 
   const [loggedCedula, setLoggedCedula] = useState<string | null>(() => {
-    const saved = localStorage.getItem('taskflow_active_cedula');
-    if (saved && ['10000001', '10203040', '20304050', '30405060', '99001122'].includes(saved)) {
-      localStorage.removeItem('taskflow_active_cedula');
-      return null;
-    }
-    return saved;
+    return localStorage.getItem('taskflow_active_cedula');
   });
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [loginCedulaInput, setLoginCedulaInput] = useState('');
@@ -138,12 +145,13 @@ export default function App() {
     seedInitialDatabaseIfEmpty();
 
     const unsubUsers = onSnapshot(
-      query(collection(db, 'app_users'), limit(200)),
+      query(collection(db, 'app_users'), limit(500)),
       snap => {
         const list: AppUser[] = [];
         snap.forEach(d => {
           list.push(d.data() as AppUser);
         });
+        syncCollectionToPermanentVault('users', list, u => u.cedula);
         setUsers(list);
         setLoadingData(false);
       },
@@ -151,49 +159,53 @@ export default function App() {
     );
 
     const unsubTasks = onSnapshot(
-      query(collection(db, 'tasks'), limit(200)),
+      query(collection(db, 'tasks'), limit(500)),
       snap => {
         const list: TaskItem[] = [];
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<TaskItem, 'id'>), id: d.id });
         });
         list.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        syncCollectionToPermanentVault('tasks', list, t => t.id);
         setTasks(list);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'tasks')
     );
 
     const unsubLogs = onSnapshot(
-      query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(120)),
+      query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(250)),
       snap => {
         const list: AuditLog[] = [];
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<AuditLog, 'id'>), id: d.id });
         });
+        syncCollectionToPermanentVault('auditLogs', list, l => l.id);
         setAuditLogs(list);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'audit_logs')
     );
 
     const unsubChat = onSnapshot(
-      query(collection(db, 'chat_messages'), orderBy('timestamp', 'asc'), limit(150)),
+      query(collection(db, 'chat_messages'), orderBy('timestamp', 'asc'), limit(300)),
       snap => {
         const list: ChatMessage[] = [];
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<ChatMessage, 'id'>), id: d.id });
         });
+        syncCollectionToPermanentVault('chatMessages', list, m => m.id);
         setChatMessages(list);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'chat_messages')
     );
 
     const unsubCal = onSnapshot(
-      query(collection(db, 'calendar_events'), limit(200)),
+      query(collection(db, 'calendar_events'), limit(500)),
       snap => {
         const list: CalendarEvent[] = [];
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<CalendarEvent, 'id'>), id: d.id });
         });
+        syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
         setCalendarEvents(list);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'calendar_events')

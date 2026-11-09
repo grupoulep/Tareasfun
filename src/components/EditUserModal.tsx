@@ -20,6 +20,7 @@ import {
   ADMIN_MASTER_AUTH_CEDULA,
 } from '../constants';
 import { SearchableLocationSelect } from './SearchableLocationSelect';
+import { CollapsibleField } from './CollapsibleField';
 
 export type TabKey = 'personal' | 'residence' | 'family' | 'bank' | 'security';
 
@@ -45,6 +46,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [expandAllFields, setExpandAllFields] = useState<boolean | undefined>(undefined);
 
   // Estados exclusivos para cambio de contraseña del Único Admin (902050377)
   const [adminAuthCedula, setAdminAuthCedula] = useState('');
@@ -140,6 +142,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setAdminOldPassword('');
       setAdminNewPassword('');
       setActiveTab(initialTab || 'personal');
+      setExpandAllFields(undefined);
       setSuccessMessage(null);
       setErrorMessage(null);
     }
@@ -261,11 +264,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   };
 
   const tabs: { key: TabKey; label: string; icon: string }[] = [
-    { key: 'personal', label: '1. Cédula e Identificación', icon: 'fi-rr-id-badge' },
-    { key: 'residence', label: '2. Ubicación y Residencia', icon: 'fi-rr-marker' },
-    { key: 'family', label: '3. Núcleo Familiar', icon: 'fi-rr-users' },
-    { key: 'bank', label: '4. Datos Bancarios (Pagos)', icon: 'fi-rr-bank' },
-    { key: 'security', label: '5. Acceso, Rol y Permisos', icon: 'fi-rr-shield-check' },
+    { key: 'personal', label: 'Pantalla 1: Cédula e Identificación', icon: 'fi-rr-id-badge' },
+    { key: 'residence', label: 'Pantalla 2: Ubicación y Residencia', icon: 'fi-rr-marker' },
+    { key: 'family', label: 'Pantalla 3: Núcleo Familiar', icon: 'fi-rr-users' },
+    { key: 'bank', label: 'Pantalla 4: Datos Bancarios', icon: 'fi-rr-bank' },
+    { key: 'security', label: 'Pantalla 5: Acceso y Permisos', icon: 'fi-rr-shield-check' },
   ];
 
   return (
@@ -285,7 +288,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-sm sm:text-base font-bold text-white truncate">
-                  {isTargetSingleAdmin ? 'Administrador Único del Sistema' : 'Editar Datos del Usuario y Ficha Personal'}
+                  {isTargetSingleAdmin ? 'Administrador Único del Sistema' : 'Editar Ficha Personal y Usuario'}
                 </h2>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#B3D9FF] text-[#0B2559] font-bold">
                   C.C. {user.cedula}
@@ -301,25 +304,37 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 </span>
               </div>
               <p className="hidden sm:block text-xs text-[#B3D9FF] mt-0.5 truncate">
-                Modifica los datos registrados de ({user.name}) con guardado directo en el sistema.
+                Haz clic en la palabra principal de cada dato para desplegar su cuadro de llenado.
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors text-sm shrink-0"
-            title="Cerrar ventana"
-          >
-            <i className="fi fi-rr-cross text-xs" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setExpandAllFields(prev => !prev)}
+              className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-[11px] font-bold flex items-center gap-1.5 transition-colors"
+              title="Desplegar o minimizar todos los campos de esta pantalla"
+            >
+              <i className={`fi ${expandAllFields ? 'fi-rr-compress-alt' : 'fi-rr-expand-arrows-alt'} text-xs`} />
+              <span className="hidden sm:inline">{expandAllFields ? 'Minimizar Campos' : 'Desplegar Todos'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors text-sm shrink-0"
+              title="Cerrar ventana"
+            >
+              <i className="fi fi-rr-cross text-xs" />
+            </button>
+          </div>
         </div>
 
-        {/* Selector Rápido de Sección en Teléfono */}
+        {/* Selector Rápido de Pantalla en Teléfono */}
         <div className="sm:hidden bg-[#F4F9FF] border-b border-[#D6EAFF] p-3 shrink-0">
           <label className="block text-[10px] font-bold uppercase tracking-wider text-[#3B82F6] mb-1">
-            Sección de Datos a Editar (5 disponibles):
+            Seleccionar Pantalla de Edición (5 pantallas):
           </label>
           <select
             value={activeTab}
@@ -357,39 +372,42 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         </div>
 
         {/* Modal Form Body */}
-        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-5 space-y-4 bg-white">
+        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-white">
           {successMessage && (
-            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-300 text-xs text-emerald-900 font-bold flex items-center gap-2 animate-fadeIn">
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-300 text-xs text-emerald-900 font-bold flex items-center gap-2 animate-fadeIn">
               <i className="fi fi-rr-check-circle text-base text-emerald-600 shrink-0" />
               <span>{successMessage}</span>
             </div>
           )}
 
           {errorMessage && (
-            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-300 text-xs text-rose-900 font-bold flex items-center gap-2 animate-fadeIn">
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-xs text-rose-900 font-bold flex items-center gap-2 animate-fadeIn">
               <i className="fi fi-rr-exclamation text-base text-rose-600 shrink-0" />
               <span>{errorMessage}</span>
             </div>
           )}
 
-          {/* TAB 1: Cédula e Identificación Personal */}
+          {/* PANTALLA 1: Cédula e Identificación Personal */}
           {activeTab === 'personal' && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex items-center justify-between flex-wrap gap-2">
+            <div className="space-y-3">
+              <div className="p-2.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex items-center justify-between flex-wrap gap-2">
                 <div>
-                  <span className="text-xs font-bold text-[#0B2559]">Cédula de Ciudadanía (ID Único en el Sistema):</span>
+                  <span className="text-xs font-bold text-[#0B2559]">Cédula (ID Único):</span>
                   <span className="ml-2 font-mono text-sm font-extrabold text-[#0B2559]">{user.cedula}</span>
                 </div>
                 <span className="text-[11px] px-2 py-0.5 rounded bg-white border border-[#B3D9FF] text-[#3B82F6] font-semibold">
-                  {isTargetSingleAdmin ? 'Cuenta Maestra de Administrador (No eliminable)' : 'Identificador de cuenta inmutable'}
+                  Haz clic en cada frase para desplegar y editar
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Nombres y Apellidos Completos *
-                  </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <CollapsibleField
+                  label="Nombres y Apellidos"
+                  valuePreview={name}
+                  required
+                  icon="fi-rr-user"
+                  forceOpen={expandAllFields}
+                >
                   <input
                     type="text"
                     required
@@ -398,12 +416,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                     placeholder="Ej. Carolina Méndez Gómez"
                     className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                   />
-                </div>
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Teléfono / WhatsApp *
-                  </label>
+                <CollapsibleField
+                  label="Teléfono / WhatsApp"
+                  valuePreview={phone}
+                  required
+                  icon="fi-rr-phone-call"
+                  forceOpen={expandAllFields}
+                >
                   <input
                     type="tel"
                     value={phone}
@@ -411,52 +432,72 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                     placeholder="Ej. 3001234567"
                     className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                   />
-                </div>
+                </CollapsibleField>
 
-                <SearchableLocationSelect
+                <CollapsibleField
                   label="Lugar Expedición Cédula"
-                  value={cedulaIssuePlace}
-                  onChange={setCedulaIssuePlace}
-                  options={COLOMBIAN_CITIES}
-                  searchPlaceholder="Buscar municipio de expedición..."
-                />
+                  valuePreview={cedulaIssuePlace}
+                  icon="fi-rr-marker"
+                  forceOpen={expandAllFields}
+                >
+                  <SearchableLocationSelect
+                    label=""
+                    value={cedulaIssuePlace}
+                    onChange={setCedulaIssuePlace}
+                    options={COLOMBIAN_CITIES}
+                    searchPlaceholder="Buscar municipio de expedición..."
+                  />
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Fecha Expedición Cédula
-                  </label>
+                <CollapsibleField
+                  label="Fecha Expedición Cédula"
+                  valuePreview={cedulaIssueDate}
+                  icon="fi-rr-calendar"
+                  forceOpen={expandAllFields}
+                >
                   <input
                     type="date"
                     value={cedulaIssueDate}
                     onChange={e => setCedulaIssueDate(e.target.value)}
                     className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                   />
-                </div>
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Fecha de Nacimiento
-                  </label>
+                <CollapsibleField
+                  label="Fecha de Nacimiento"
+                  valuePreview={birthDate}
+                  icon="fi-rr-calendar"
+                  forceOpen={expandAllFields}
+                >
                   <input
                     type="date"
                     value={birthDate}
                     onChange={e => setBirthDate(e.target.value)}
                     className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                   />
-                </div>
+                </CollapsibleField>
 
-                <SearchableLocationSelect
+                <CollapsibleField
                   label="Lugar de Nacimiento"
-                  value={birthPlace}
-                  onChange={setBirthPlace}
-                  options={COLOMBIAN_CITIES}
-                  searchPlaceholder="Buscar municipio de nacimiento..."
-                />
+                  valuePreview={birthPlace}
+                  icon="fi-rr-map-marker"
+                  forceOpen={expandAllFields}
+                >
+                  <SearchableLocationSelect
+                    label=""
+                    value={birthPlace}
+                    onChange={setBirthPlace}
+                    options={COLOMBIAN_CITIES}
+                    searchPlaceholder="Buscar municipio de nacimiento..."
+                  />
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Grupo Sanguíneo / RH
-                  </label>
+                <CollapsibleField
+                  label="Grupo Sanguíneo / RH"
+                  valuePreview={bloodType}
+                  icon="fi-rr-heart"
+                  forceOpen={expandAllFields}
+                >
                   <select
                     value={bloodType}
                     onChange={e => setBloodType(e.target.value)}
@@ -468,12 +509,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       </option>
                     ))}
                   </select>
-                </div>
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Estado Civil
-                  </label>
+                <CollapsibleField
+                  label="Estado Civil"
+                  valuePreview={maritalStatus}
+                  icon="fi-rr-users-alt"
+                  forceOpen={expandAllFields}
+                >
                   <select
                     value={maritalStatus}
                     onChange={e => setMaritalStatus(e.target.value)}
@@ -485,17 +528,23 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       </option>
                     ))}
                   </select>
-                </div>
+                </CollapsibleField>
               </div>
             </div>
           )}
 
-          {/* TAB 2: Ubicación y Residencia */}
+          {/* PANTALLA 2: Ubicación y Residencia */}
           {activeTab === 'residence' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <CollapsibleField
+                label="Departamento de Ubicación"
+                valuePreview={locationDepartmentState}
+                required
+                icon="fi-rr-map"
+                forceOpen={expandAllFields}
+              >
                 <SearchableLocationSelect
-                  label="Departamento / Estado de Ubicación"
+                  label=""
                   required
                   value={locationDepartmentState}
                   onChange={newDept => {
@@ -508,9 +557,17 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                   options={COLOMBIAN_DEPARTMENTS}
                   searchPlaceholder="Buscar departamento..."
                 />
+              </CollapsibleField>
 
+              <CollapsibleField
+                label="Ciudad / Municipio"
+                valuePreview={locationCity}
+                required
+                icon="fi-rr-marker"
+                forceOpen={expandAllFields}
+              >
                 <SearchableLocationSelect
-                  label="Ciudad / Municipio de Residencia"
+                  label=""
                   required
                   value={locationCity}
                   onChange={setLocationCity}
@@ -523,130 +580,145 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                   onSelectSecondaryDepartment={dept => setLocationDepartmentState(dept)}
                   searchPlaceholder="Buscar municipio en Colombia..."
                 />
-              </div>
+              </CollapsibleField>
 
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Dirección Exacta de Residencia y Barrio *
-                  </label>
-                  <input
-                    type="text"
-                    value={residenceAddress}
-                    onChange={e => setResidenceAddress(e.target.value)}
-                    placeholder="Ej. Carrera 15 # 85-30 Apto 204, Barrio Chico"
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
+              <CollapsibleField
+                label="Dirección de Residencia y Barrio"
+                valuePreview={residenceAddress}
+                required
+                icon="fi-rr-home"
+                className="sm:col-span-2"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="text"
+                  value={residenceAddress}
+                  onChange={e => setResidenceAddress(e.target.value)}
+                  placeholder="Ej. Carrera 15 # 85-30 Apto 204, Barrio Chico"
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Tipo de Vivienda
-                  </label>
-                  <select
-                    value={residenceType}
-                    onChange={e => setResidenceType(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {RESIDENCE_TYPES.map(vt => (
-                      <option key={vt} value={vt}>
-                        {vt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <CollapsibleField
+                label="Tipo de Vivienda"
+                valuePreview={residenceType}
+                icon="fi-rr-building"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={residenceType}
+                  onChange={e => setResidenceType(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {RESIDENCE_TYPES.map(vt => (
+                    <option key={vt} value={vt}>
+                      {vt}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Estrato / Zona
-                  </label>
-                  <select
-                    value={residenceStratum}
-                    onChange={e => setResidenceStratum(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {STRATUM_OPTIONS.map(s => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <CollapsibleField
+                label="Estrato / Zona"
+                valuePreview={residenceStratum}
+                icon="fi-rr-layers"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={residenceStratum}
+                  onChange={e => setResidenceStratum(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {STRATUM_OPTIONS.map(s => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
             </div>
           )}
 
-          {/* TAB 3: Núcleo Familiar y Emergencia */}
+          {/* PANTALLA 3: Núcleo Familiar y Emergencia */}
           {activeTab === 'family' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Número de Familiares
-                  </label>
-                  <select
-                    value={familyMembersCount}
-                    onChange={e => setFamilyMembersCount(Number(e.target.value))}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    <option value={0}>0 familiares (Vive solo)</option>
-                    <option value={1}>1 familiar a cargo</option>
-                    <option value={2}>2 familiares</option>
-                    <option value={3}>3 familiares</option>
-                    <option value={4}>4 familiares</option>
-                    <option value={5}>5 familiares</option>
-                    <option value={6}>6 o más familiares</option>
-                  </select>
-                </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <CollapsibleField
+                label="Número de Familiares"
+                valuePreview={`${familyMembersCount} familiar(es)`}
+                icon="fi-rr-users"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={familyMembersCount}
+                  onChange={e => setFamilyMembersCount(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  <option value={0}>0 familiares (Vive solo)</option>
+                  <option value={1}>1 familiar a cargo</option>
+                  <option value={2}>2 familiares</option>
+                  <option value={3}>3 familiares</option>
+                  <option value={4}>4 familiares</option>
+                  <option value={5}>5 familiares</option>
+                  <option value={6}>6 o más familiares</option>
+                </select>
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Contacto de Emergencia
-                  </label>
-                  <input
-                    type="text"
-                    value={emergencyContactName}
-                    onChange={e => setEmergencyContactName(e.target.value)}
-                    placeholder="Nombre completo del familiar"
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
+              <CollapsibleField
+                label="Contacto de Emergencia"
+                valuePreview={emergencyContactName}
+                icon="fi-rr-user-add"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="text"
+                  value={emergencyContactName}
+                  onChange={e => setEmergencyContactName(e.target.value)}
+                  placeholder="Nombre completo del familiar"
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Parentesco del Contacto
-                  </label>
-                  <select
-                    value={emergencyRelationship}
-                    onChange={e => setEmergencyRelationship(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {EMERGENCY_RELATIONSHIPS.map(rel => (
-                      <option key={rel} value={rel}>
-                        {rel}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <CollapsibleField
+                label="Parentesco del Contacto"
+                valuePreview={emergencyRelationship}
+                icon="fi-rr-heart"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={emergencyRelationship}
+                  onChange={e => setEmergencyRelationship(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {EMERGENCY_RELATIONSHIPS.map(rel => (
+                    <option key={rel} value={rel}>
+                      {rel}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Teléfono del Contacto
-                  </label>
-                  <input
-                    type="tel"
-                    value={emergencyContactPhone}
-                    onChange={e => setEmergencyContactPhone(e.target.value)}
-                    placeholder="Ej. 3109876543"
-                    className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
-              </div>
+              <CollapsibleField
+                label="Teléfono de Emergencia"
+                valuePreview={emergencyContactPhone}
+                icon="fi-rr-phone-call"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="tel"
+                  value={emergencyContactPhone}
+                  onChange={e => setEmergencyContactPhone(e.target.value)}
+                  placeholder="Ej. 3109876543"
+                  className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-              <div>
-                <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                  Composición Familiar Predeterminada
-                </label>
+              <CollapsibleField
+                label="Composición Familiar"
+                valuePreview={familyNotes}
+                icon="fi-rr-document"
+                className="sm:col-span-2"
+                forceOpen={expandAllFields}
+              >
                 <select
                   value={familyNotes}
                   onChange={e => setFamilyNotes(e.target.value)}
@@ -658,86 +730,92 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                     </option>
                   ))}
                 </select>
-              </div>
+              </CollapsibleField>
             </div>
           )}
 
-          {/* TAB 4: Datos Bancarios para Pagos */}
+          {/* PANTALLA 4: Datos Bancarios para Pagos */}
           {activeTab === 'bank' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Banco / Billetera Digital
-                  </label>
-                  <select
-                    value={bankName}
-                    onChange={e => setBankName(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {BANK_OPTIONS.map(b => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <CollapsibleField
+                label="Banco / Billetera Digital"
+                valuePreview={bankName}
+                icon="fi-rr-bank"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={bankName}
+                  onChange={e => setBankName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {BANK_OPTIONS.map(b => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Tipo de Cuenta
-                  </label>
-                  <select
-                    value={bankAccountType}
-                    onChange={e => setBankAccountType(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {BANK_ACCOUNT_TYPES.map(t => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <CollapsibleField
+                label="Tipo de Cuenta"
+                valuePreview={bankAccountType}
+                icon="fi-rr-credit-card"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={bankAccountType}
+                  onChange={e => setBankAccountType(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {BANK_ACCOUNT_TYPES.map(t => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Número de Cuenta / Llave
-                  </label>
-                  <input
-                    type="text"
-                    value={bankAccountNumber}
-                    onChange={e => setBankAccountNumber(e.target.value)}
-                    placeholder="Número de cuenta o celular"
-                    className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
+              <CollapsibleField
+                label="Número de Cuenta / Llave"
+                valuePreview={bankAccountNumber}
+                icon="fi-rr-hastag"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="text"
+                  value={bankAccountNumber}
+                  onChange={e => setBankAccountNumber(e.target.value)}
+                  placeholder="Número de cuenta o celular"
+                  className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Titular de la Cuenta
-                  </label>
-                  <select
-                    value={bankAccountHolder}
-                    onChange={e => setBankAccountHolder(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                  >
-                    {BANK_HOLDER_OPTIONS.map(h => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <CollapsibleField
+                label="Titular de la Cuenta"
+                valuePreview={bankAccountHolder}
+                icon="fi-rr-id-card-clip-alt"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={bankAccountHolder}
+                  onChange={e => setBankAccountHolder(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                >
+                  {BANK_HOLDER_OPTIONS.map(h => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </CollapsibleField>
             </div>
           )}
 
-          {/* TAB 5: Acceso, Rol, Aprobación y Permisos de Sistema */}
+          {/* PANTALLA 5: Acceso, Rol, Aprobación y Permisos */}
           {activeTab === 'security' && (
-            <div className="space-y-5">
+            <div className="space-y-4">
               {isTargetSingleAdmin ? (
-                <div className="p-4 rounded-xl bg-[#F4F9FF] border-2 border-[#0B2559]/20 space-y-4">
+                <div className="p-3.5 rounded-xl bg-[#F4F9FF] border-2 border-[#0B2559]/20 space-y-3">
                   <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-[#D6EAFF]">
                     <div className="flex items-center gap-2">
                       <i className="fi fi-rr-shield-keyhole text-sm text-[#0B2559]" />
@@ -751,28 +829,36 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                   </div>
 
                   <p className="text-xs text-[#0B2559]/80">
-                    Para cambiar la contraseña del Administrador debes ingresar el número de cédula de autorización y la contraseña anterior. Si no deseas cambiar la contraseña, deja estos tres campos en blanco.
+                    Haz clic en cada palabra clave para desplegar su casilla si deseas cambiar la contraseña del Administrador.
                   </p>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                        Cédula de Autorización *
-                      </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <CollapsibleField
+                      label="Cédula de Autorización"
+                      valuePreview={adminAuthCedula}
+                      required
+                      isSecret
+                      icon="fi-rr-id-badge"
+                      forceOpen={expandAllFields}
+                    >
                       <input
                         type="password"
                         autoComplete="off"
                         value={adminAuthCedula}
                         onChange={e => setAdminAuthCedula(e.target.value)}
-                        placeholder="Número de cédula autorizado"
+                        placeholder="Cédula autorizada"
                         className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                       />
-                    </div>
+                    </CollapsibleField>
 
-                    <div>
-                      <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                        Contraseña Anterior *
-                      </label>
+                    <CollapsibleField
+                      label="Contraseña Anterior"
+                      valuePreview={adminOldPassword}
+                      required
+                      isSecret
+                      icon="fi-rr-lock"
+                      forceOpen={expandAllFields}
+                    >
                       <input
                         type="password"
                         autoComplete="off"
@@ -781,12 +867,16 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                         placeholder="Contraseña actual"
                         className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                       />
-                    </div>
+                    </CollapsibleField>
 
-                    <div>
-                      <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                        Nueva Contraseña *
-                      </label>
+                    <CollapsibleField
+                      label="Nueva Contraseña"
+                      valuePreview={adminNewPassword}
+                      required
+                      isSecret
+                      icon="fi-rr-key"
+                      forceOpen={expandAllFields}
+                    >
                       <input
                         type="password"
                         autoComplete="off"
@@ -795,17 +885,21 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                         placeholder="Nueva contraseña"
                         className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                       />
-                    </div>
+                    </CollapsibleField>
                   </div>
                 </div>
               ) : null}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {!isTargetSingleAdmin && (
-                  <div>
-                    <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                      Contraseña de Acceso *
-                    </label>
+                  <CollapsibleField
+                    label="Contraseña de Acceso"
+                    valuePreview={password}
+                    required
+                    isSecret={!showPassword}
+                    icon="fi-rr-key"
+                    forceOpen={expandAllFields}
+                  >
                     <div className="relative">
                       <input
                         type={showPassword ? 'text' : 'password'}
@@ -824,13 +918,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                         <i className={`fi ${showPassword ? 'fi-rr-eye-crossed' : 'fi-rr-eye'}`} />
                       </button>
                     </div>
-                  </div>
+                  </CollapsibleField>
                 )}
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Correo Electrónico
-                  </label>
+                <CollapsibleField
+                  label="Correo Electrónico"
+                  valuePreview={email}
+                  icon="fi-rr-envelope"
+                  forceOpen={expandAllFields}
+                >
                   <input
                     type="email"
                     value={email}
@@ -838,12 +934,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                     placeholder="correo@fundacionulep.org"
                     className="w-full px-3 py-2 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                   />
-                </div>
+                </CollapsibleField>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Departamento / Dependencia
-                  </label>
+                <CollapsibleField
+                  label="Departamento / Dependencia"
+                  valuePreview={department}
+                  icon="fi-rr-briefcase"
+                  forceOpen={expandAllFields}
+                >
                   <select
                     value={department}
                     onChange={e => setDepartment(e.target.value)}
@@ -855,22 +953,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       </option>
                     ))}
                   </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                    Rol en la Plataforma
-                  </label>
-                  <div className="w-full px-3 py-2 text-xs font-bold text-[#0B2559] bg-[#EAF3FF] border border-[#B3D9FF] rounded-lg">
-                    {isTargetSingleAdmin ? 'Administrador Único (Fijo)' : 'Panel de Colaborador (Usuario)'}
-                  </div>
-                </div>
+                </CollapsibleField>
 
                 {!isTargetSingleAdmin && (
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-bold text-[#0B2559] mb-1">
-                      Estado de Autorización / Aprobación
-                    </label>
+                  <CollapsibleField
+                    label="Estado de Autorización"
+                    valuePreview={approvalStatus.toUpperCase()}
+                    icon="fi-rr-user-check"
+                    forceOpen={expandAllFields}
+                  >
                     <select
                       value={approvalStatus}
                       onChange={e => setApprovalStatus(e.target.value as 'aprobado' | 'pendiente' | 'rechazado')}
@@ -880,22 +971,22 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       <option value="pendiente">Pendiente de Autorización</option>
                       <option value="rechazado">Rechazado / Inactivo</option>
                     </select>
-                  </div>
+                  </CollapsibleField>
                 )}
               </div>
 
               {/* Matriz de Permisos */}
-              <div className="p-4 rounded-xl bg-white border border-[#B3D9FF] space-y-3">
-                <div className="text-xs font-bold text-[#0B2559] uppercase tracking-wider flex items-center justify-between">
+              <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2.5">
+                <div className="text-xs font-bold text-[#0B2559] uppercase tracking-wider flex items-center justify-between flex-wrap gap-1">
                   <span>Matriz de Permisos de Acciones Individuales:</span>
                   <span className="text-[11px] text-[#3B82F6] font-normal">
                     {isTargetSingleAdmin
-                      ? '(El Administrador Único posee todos los permisos habilitados permanentemente)'
-                      : '(Haz clic en cada botón para habilitar o denegar)'}
+                      ? '(Administrador Único: todos habilitados)'
+                      : '(Clic en cada permiso para cambiar)'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                   {[
                     { label: 'Crear Tareas', value: canCreateTasks, toggle: () => !isTargetSingleAdmin && setCanCreateTasks(!canCreateTasks) },
                     { label: 'Editar Tareas y Progreso', value: canEditTasks, toggle: () => !isTargetSingleAdmin && setCanEditTasks(!canEditTasks) },
@@ -911,8 +1002,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       onClick={perm.toggle}
                       className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-bold transition-all ${
                         perm.value
-                          ? 'bg-[#EAF3FF] text-[#0B2559] border-[#B3D9FF]'
-                          : 'bg-rose-50 text-rose-800 border-rose-200 opacity-70'
+                          ? 'bg-white text-[#0B2559] border-[#B3D9FF]'
+                          : 'bg-rose-50 text-rose-800 border-rose-200 opacity-75'
                       } ${isTargetSingleAdmin ? 'cursor-default' : ''}`}
                     >
                       <span>{perm.label}</span>

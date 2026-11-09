@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AppUser, TaskItem, TaskPriority, TaskStatus } from '../types';
 import { cleanId } from '../firebase';
+import { CollapsibleField } from './CollapsibleField';
 
 interface TaskModalProps {
   isOpen: boolean;
@@ -36,6 +37,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [showPass, setShowPass] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [activeScreen, setActiveScreen] = useState<'main' | 'details' | 'vault'>('main');
+  const [expandAllFields, setExpandAllFields] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     if (initialTask) {
@@ -71,6 +74,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setAccessPassword('');
       setDirectLink('');
     }
+    setActiveScreen('main');
+    setExpandAllFields(undefined);
   }, [initialTask, isOpen, currentUser]);
 
   if (!isOpen) return null;
@@ -85,10 +90,16 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim()) {
+      setActiveScreen('main');
+      return;
+    }
     setSaving(true);
     try {
-      const assignedUser = users.find(u => u.cedula === assignedToCedula) || currentUser;
+      const isOpenTask = assignedToCedula === 'ABIERTA';
+      const assignedUser = isOpenTask
+        ? null
+        : users.find(u => u.cedula === assignedToCedula) || currentUser;
       const combinedDue = new Date(`${dueDate}T${dueTime || '17:00'}:00`).toISOString();
       const computedProgress = status === 'completada' ? 100 : progress;
 
@@ -101,8 +112,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         progress: computedProgress,
         tags: tags.trim(),
         category: category.trim() || 'Operaciones',
-        assignedToCedula: assignedUser.cedula,
-        assignedToName: assignedUser.name,
+        assignedToCedula: isOpenTask ? 'ABIERTA' : assignedUser!.cedula,
+        assignedToName: isOpenTask
+          ? 'Abierta (Cualquiera puede realizarla)'
+          : assignedUser!.name,
         createdByCedula: initialTask?.createdByCedula || currentUser.cedula,
         createdByName: initialTask?.createdByName || currentUser.name,
         createdAt: initialTask?.createdAt || new Date().toISOString(),
@@ -121,6 +134,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     }
   };
 
+  const assignedLabel =
+    assignedToCedula === 'ABIERTA'
+      ? 'ABIERTA (Cualquiera)'
+      : users.find(u => u.cedula === assignedToCedula)?.name || currentUser.name;
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0B2559]/70 sm:p-4 overflow-y-auto">
       <div className="bg-white border-t-2 sm:border border-[#B3D9FF] rounded-t-3xl sm:rounded-2xl w-full max-w-3xl max-h-[94vh] sm:max-h-none flex flex-col overflow-hidden sm:my-8 shadow-xl">
@@ -129,7 +147,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]/50" />
         </div>
 
-        {/* Cabecera del Modal con el nuevo logo FUN_BLANCO sobre fondo institucional */}
+        {/* Cabecera del Modal */}
         <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <img
@@ -143,230 +161,316 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 {initialTask ? 'Editar Registro de Actividad / Tarea' : 'Nueva Actividad con Asignación y Credenciales'}
               </h2>
               <p className="hidden sm:block text-xs text-[#B3D9FF] mt-0.5 tabular-nums truncate">
-                {initialTask
-                  ? `Registrado por: ${initialTask.createdByName} (${initialTask.createdByCedula}) · Fecha: ${new Date(initialTask.createdAt).toLocaleString('es-ES')}`
-                  : `Autor actual: ${currentUser.name} (Cédula: ${currentUser.cedula}) · Fecha y hora automática`}
+                Haz clic en la frase principal de cada campo para desplegar su cuadro de llenado.
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center text-[#B3D9FF] hover:text-white rounded-lg hover:bg-white/10 transition-colors shrink-0"
-          >
-            <i className="fi fi-rr-cross text-sm" />
-          </button>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setExpandAllFields(prev => !prev)}
+              className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-[11px] font-bold flex items-center gap-1.5 transition-colors"
+              title="Desplegar o minimizar todos los campos"
+            >
+              <i className={`fi ${expandAllFields ? 'fi-rr-compress-alt' : 'fi-rr-expand-arrows-alt'} text-xs`} />
+              <span className="hidden sm:inline">{expandAllFields ? 'Minimizar' : 'Desplegar Todo'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center text-[#B3D9FF] hover:text-white rounded-lg hover:bg-white/10 transition-colors shrink-0"
+            >
+              <i className="fi fi-rr-cross text-sm" />
+            </button>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto flex-1 max-h-[82vh]">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2">
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Título de la Tarea o Entrega *
-              </label>
-              <input
-                type="text"
+        {/* Barra de Pantallas del Modal */}
+        <div className="bg-[#F4F9FF] border-b border-[#D6EAFF] px-4 py-2 flex items-center gap-1.5 overflow-x-auto shrink-0">
+          {[
+            { id: 'main' as const, label: 'Pantalla 1: Datos y Encargado', icon: 'fi-rr-list-check' },
+            { id: 'details' as const, label: 'Pantalla 2: Descripción y Notas', icon: 'fi-rr-document' },
+            { id: 'vault' as const, label: 'Pantalla 3: Claves y Link Directo', icon: 'fi-rr-key' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveScreen(tab.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-all ${
+                activeScreen === tab.id
+                  ? 'bg-[#0B2559] text-white shadow-2xs'
+                  : 'bg-white text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF]'
+              }`}
+            >
+              <i className={`fi ${tab.icon} text-xs`} />
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-3.5 overflow-y-auto flex-1 max-h-[78vh]">
+          {activeScreen === 'main' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <CollapsibleField
+                label="Título de la Tarea o Entrega"
+                valuePreview={title}
                 required
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="Ej. Conciliación mensual de pasarela o despliegue de servidor"
-                className="w-full px-3.5 py-2 text-sm text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Categoría / Área
-              </label>
-              <input
-                type="text"
-                value={category}
-                onChange={e => setCategory(e.target.value)}
-                placeholder="Finanzas, TI, Auditoría..."
-                className="w-full px-3.5 py-2 text-sm text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Prioridad
-              </label>
-              <select
-                value={priority}
-                onChange={e => setPriority(e.target.value as TaskPriority)}
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
+                defaultOpen={!initialTask}
+                forceOpen={expandAllFields}
+                icon="fi-rr-edit"
+                className="sm:col-span-2"
               >
-                <option value="baja">Baja</option>
-                <option value="media">Media</option>
-                <option value="alta">Alta</option>
-                <option value="critica">Crítica (Alerta Cierre)</option>
-              </select>
-            </div>
+                <input
+                  type="text"
+                  required
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  placeholder="Ej. Conciliación mensual de pasarela o despliegue de servidor"
+                  className="w-full px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Estado Actual
-              </label>
-              <select
-                value={status}
-                onChange={e => {
-                  const val = e.target.value as TaskStatus;
-                  setStatus(val);
-                  if (val === 'completada') setProgress(100);
-                  else if (val === 'pendiente' && progress === 100) setProgress(0);
-                }}
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
-              >
-                <option value="pendiente">Pendiente</option>
-                <option value="en_progreso">En Progreso</option>
-                <option value="completada">Completada</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1 tabular-nums">
-                Progreso ({status === 'completada' ? 100 : progress}%)
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={status === 'completada' ? 100 : progress}
-                onChange={e => {
-                  const val = Number(e.target.value);
-                  setProgress(val);
-                  if (val === 100) setStatus('completada');
-                  else if (val > 0) setStatus('en_progreso');
-                  else setStatus('pendiente');
-                }}
-                className="w-full mt-2 accent-[#0B2559]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1 flex items-center gap-1.5">
-                <i className="fi fi-rr-user-check text-xs text-[#3B82F6]" /> Responsable Asignado
-              </label>
-              <select
-                value={assignedToCedula}
-                onChange={e => setAssignedToCedula(e.target.value)}
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
-              >
-                {users.map(u => (
-                  <option key={u.cedula} value={u.cedula}>
-                    {u.name} (C.C. {u.cedula})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1 flex items-center gap-1.5">
-                <i className="fi fi-rr-calendar text-xs text-[#3B82F6]" /> Fecha Límite de Cierre
-              </label>
-              <input
-                type="date"
+              <CollapsibleField
+                label="Encargado / Asignación"
+                valuePreview={assignedLabel}
                 required
-                value={dueDate}
-                onChange={e => setDueDate(e.target.value)}
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg tabular-nums focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
+                icon="fi-rr-user-check"
+                forceOpen={expandAllFields}
+                className="sm:col-span-2"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-[#3B82F6] font-semibold">
+                      Selecciona un usuario o déjala abierta para que cualquiera la realice:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAssignedToCedula(prev =>
+                          prev === 'ABIERTA' ? currentUser.cedula : 'ABIERTA'
+                        )
+                      }
+                      className={`text-[10px] font-bold px-2.5 py-1 rounded-md border transition-colors ${
+                        assignedToCedula === 'ABIERTA'
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#B3D9FF]'
+                      }`}
+                    >
+                      {assignedToCedula === 'ABIERTA' ? '✓ Abierta a todos' : 'Dejar Abierta'}
+                    </button>
+                  </div>
+                  <select
+                    value={assignedToCedula}
+                    onChange={e => setAssignedToCedula(e.target.value)}
+                    className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559] font-medium"
+                  >
+                    <option value="ABIERTA">
+                      🌐 ABIERTA — Cualquiera puede realizarla
+                    </option>
+                    <option value={currentUser.cedula}>
+                      👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
+                    </option>
+                    {users
+                      .filter(u => u.cedula !== currentUser.cedula)
+                      .map(u => (
+                        <option key={u.cedula} value={u.cedula}>
+                          👥 {u.name} (C.C. {u.cedula}) — {u.department || 'General'}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </CollapsibleField>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Hora Límite de Cierre
-              </label>
-              <input
-                type="time"
+              <CollapsibleField
+                label="Prioridad"
+                valuePreview={priority.toUpperCase()}
+                icon="fi-rr-flag"
+                forceOpen={expandAllFields}
+              >
+                <select
+                  value={priority}
+                  onChange={e => setPriority(e.target.value as TaskPriority)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
+                >
+                  <option value="baja">Baja</option>
+                  <option value="media">Media</option>
+                  <option value="alta">Alta</option>
+                  <option value="critica">Crítica (Alerta Cierre)</option>
+                </select>
+              </CollapsibleField>
+
+              <CollapsibleField
+                label="Estado y Progreso"
+                valuePreview={`${status.replace('_', ' ').toUpperCase()} (${status === 'completada' ? 100 : progress}%)`}
+                icon="fi-rr-chart-pie-alt"
+                forceOpen={expandAllFields}
+              >
+                <div className="space-y-2">
+                  <select
+                    value={status}
+                    onChange={e => {
+                      const val = e.target.value as TaskStatus;
+                      setStatus(val);
+                      if (val === 'completada') setProgress(100);
+                      else if (val === 'pendiente' && progress === 100) setProgress(0);
+                    }}
+                    className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
+                  >
+                    <option value="pendiente">Pendiente</option>
+                    <option value="en_progreso">En Progreso</option>
+                    <option value="completada">Completada</option>
+                  </select>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={status === 'completada' ? 100 : progress}
+                      onChange={e => {
+                        const val = Number(e.target.value);
+                        setProgress(val);
+                        if (val === 100) setStatus('completada');
+                        else if (val > 0) setStatus('en_progreso');
+                        else setStatus('pendiente');
+                      }}
+                      className="flex-1 accent-[#0B2559]"
+                    />
+                    <span className="text-xs font-mono font-bold text-[#0B2559]">
+                      {status === 'completada' ? 100 : progress}%
+                    </span>
+                  </div>
+                </div>
+              </CollapsibleField>
+
+              <CollapsibleField
+                label="Fecha Límite de Cierre"
+                valuePreview={dueDate}
                 required
-                value={dueTime}
-                onChange={e => setDueTime(e.target.value)}
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg tabular-nums focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
+                icon="fi-rr-calendar"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="date"
+                  required
+                  value={dueDate}
+                  onChange={e => setDueDate(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg tabular-nums focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Etiquetas Personalizadas (separadas por coma)
-              </label>
-              <input
-                type="text"
-                value={tags}
-                onChange={e => setTags(e.target.value)}
-                placeholder="Urgente, Servidor, Cliente-A"
-                className="w-full px-3 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
-          </div>
+              <CollapsibleField
+                label="Hora Límite de Cierre"
+                valuePreview={dueTime}
+                required
+                icon="fi-rr-clock"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="time"
+                  required
+                  value={dueTime}
+                  onChange={e => setDueTime(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg tabular-nums focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Descripción de la Actividad
-              </label>
-              <textarea
-                rows={3}
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                placeholder="Detalla los objetivos y entregables requeridos..."
-                className="w-full px-3.5 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-              />
-            </div>
+              <CollapsibleField
+                label="Categoría / Área"
+                valuePreview={category}
+                icon="fi-rr-folder"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="text"
+                  value={category}
+                  onChange={e => setCategory(e.target.value)}
+                  placeholder="Finanzas, TI, Auditoría..."
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#0B2559] mb-1">
-                Notas Técnicas / Observaciones de Ejecución
-              </label>
-              <textarea
-                rows={3}
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                placeholder="Instrucciones paso a paso, advertencias o notas para el equipo..."
-                className="w-full px-3.5 py-2 text-sm text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-              />
+              <CollapsibleField
+                label="Etiquetas Personalizadas"
+                valuePreview={tags}
+                icon="fi-rr-tags"
+                forceOpen={expandAllFields}
+              >
+                <input
+                  type="text"
+                  value={tags}
+                  onChange={e => setTags(e.target.value)}
+                  placeholder="Urgente, Servidor, Cliente-A"
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
             </div>
-          </div>
+          )}
 
-          {/* Bóveda de Credenciales y Link Directo */}
-          <div className="p-4 bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <i className="fi fi-rr-key text-sm text-[#3B82F6]" />
-                <span className="text-xs font-bold text-[#0B2559]">
-                  Credenciales de Acceso (Correos / Contraseñas) y Link Directo de la Tarea
-                </span>
-              </div>
+          {activeScreen === 'details' && (
+            <div className="space-y-2.5">
+              <CollapsibleField
+                label="Descripción de la Actividad"
+                valuePreview={description}
+                defaultOpen
+                forceOpen={expandAllFields}
+                icon="fi-rr-align-left"
+              >
+                <textarea
+                  rows={3}
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  placeholder="Detalla los objetivos y entregables requeridos..."
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
+
+              <CollapsibleField
+                label="Notas Técnicas / Observaciones"
+                valuePreview={notes}
+                forceOpen={expandAllFields}
+                icon="fi-rr-comment-alt"
+              >
+                <textarea
+                  rows={3}
+                  value={notes}
+                  onChange={e => setNotes(e.target.value)}
+                  placeholder="Instrucciones paso a paso, advertencias o notas para el equipo..."
+                  className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                />
+              </CollapsibleField>
+            </div>
+          )}
+
+          {activeScreen === 'vault' && (
+            <div className="space-y-2.5">
               {!canSeeVault && (
-                <span className="text-xs text-amber-800">
-                  Tu perfil tiene restringida la visualización de claves por el Administrador
-                </span>
+                <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                  Tu perfil tiene restringida la visualización de claves por el Administrador.
+                </div>
               )}
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-[#0B2559] mb-1">
-                  Correo o Usuario de Acceso
-                </label>
+              <CollapsibleField
+                label="Correo o Usuario de Acceso"
+                valuePreview={accessEmail}
+                forceOpen={expandAllFields}
+                icon="fi-rr-envelope"
+              >
                 <div className="flex items-center gap-1">
                   <input
                     type="text"
                     value={accessEmail}
                     onChange={e => setAccessEmail(e.target.value)}
                     placeholder="admin@plataforma.com"
-                    className="w-full px-3 py-1.5 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
+                    className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
                   />
                   {accessEmail && (
                     <button
                       type="button"
                       onClick={() => handleCopy(accessEmail, 'email')}
-                      className="p-1.5 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
+                      className="p-2 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
                       title="Copiar correo"
                     >
                       {copiedField === 'email' ? (
@@ -377,12 +481,15 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     </button>
                   )}
                 </div>
-              </div>
+              </CollapsibleField>
 
-              <div>
-                <label className="block text-xs font-medium text-[#0B2559] mb-1">
-                  Contraseña o Token si necesita
-                </label>
+              <CollapsibleField
+                label="Contraseña o Token"
+                valuePreview={accessPassword}
+                isSecret={!showPass}
+                forceOpen={expandAllFields}
+                icon="fi-rr-key"
+              >
                 <div className="flex items-center gap-1">
                   <input
                     type={showPass && canSeeVault ? 'text' : 'password'}
@@ -390,13 +497,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     onChange={e => setAccessPassword(e.target.value)}
                     disabled={!canSeeVault}
                     placeholder="••••••••••••"
-                    className="w-full px-3 py-1.5 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559] disabled:bg-[#EAF3FF]"
+                    className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559] disabled:bg-[#EAF3FF]"
                   />
                   {canSeeVault && (
                     <button
                       type="button"
                       onClick={() => setShowPass(!showPass)}
-                      className="p-1.5 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
+                      className="p-2 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
                       title="Mostrar / Ocultar contraseña"
                     >
                       <i className={`fi ${showPass ? 'fi-rr-eye-crossed' : 'fi-rr-eye'} text-xs`} />
@@ -406,7 +513,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     <button
                       type="button"
                       onClick={() => handleCopy(accessPassword, 'pass')}
-                      className="p-1.5 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
+                      className="p-2 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white"
                       title="Copiar contraseña"
                     >
                       {copiedField === 'pass' ? (
@@ -417,51 +524,80 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     </button>
                   )}
                 </div>
-              </div>
+              </CollapsibleField>
 
-              <div>
-                <label className="block text-xs font-medium text-[#0B2559] mb-1">
-                  Link Directo para Entrar a la Tarea
-                </label>
+              <CollapsibleField
+                label="Link Directo de la Tarea"
+                valuePreview={directLink}
+                forceOpen={expandAllFields}
+                icon="fi-rr-link"
+              >
                 <div className="flex items-center gap-1">
                   <input
                     type="url"
                     value={directLink}
                     onChange={e => setDirectLink(e.target.value)}
                     placeholder="https://..."
-                    className="w-full px-3 py-1.5 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
+                    className="w-full px-3 py-2 text-xs font-mono text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559]"
                   />
                   {directLink && (
                     <a
                       href={directLink}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="p-1.5 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white shrink-0"
+                      className="p-2 text-[#0B2559] hover:bg-[#B3D9FF] border border-[#B3D9FF] rounded-lg bg-white shrink-0"
                       title="Abrir enlace directo"
                     >
                       <i className="fi fi-rr-arrow-up-right-from-square text-xs" />
                     </a>
                   )}
                 </div>
-              </div>
+              </CollapsibleField>
             </div>
-          </div>
+          )}
 
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#D6EAFF]">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF] transition-colors whitespace-nowrap shrink-0"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-5 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 shadow-2xs"
-            >
-              {saving ? 'Guardando en Tiempo Real...' : initialTask ? 'Guardar Cambios de Tarea' : 'Registrar y Sincronizar Tarea'}
-            </button>
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[#D6EAFF]">
+            <div className="flex items-center gap-1.5">
+              {activeScreen !== 'main' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActiveScreen(prev => (prev === 'vault' ? 'details' : 'main'))
+                  }
+                  className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF]"
+                >
+                  ← Anterior
+                </button>
+              )}
+              {activeScreen !== 'vault' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActiveScreen(prev => (prev === 'main' ? 'details' : 'vault'))
+                  }
+                  className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF]"
+                >
+                  Siguiente Pantalla →
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF] transition-colors whitespace-nowrap shrink-0"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-5 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 shadow-2xs"
+              >
+                {saving ? 'Guardando...' : initialTask ? 'Guardar Cambios' : 'Registrar Tarea'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

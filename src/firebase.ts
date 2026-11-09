@@ -1,25 +1,139 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import {
   getFirestore,
   doc,
-  getDocFromServer,
+  getDoc,
   setDoc,
-  updateDoc,
   deleteDoc,
   collection,
   getDocs,
   query,
   limit,
-  writeBatch
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { SINGLE_ADMIN_CEDULA } from './constants';
+import { refreshInMemoryIdToken } from './lib/firebase';
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const googleAuthProvider = new GoogleAuthProvider();
+
+export const PERMANENT_VAULT_STORAGE_KEY = 'ulep_permanent_vault_v1';
+
+export interface PermanentDataVault {
+  users: Record<string, AppUser>;
+  tasks: Record<string, TaskItem>;
+  calendarEvents: Record<string, CalendarEvent>;
+  chatMessages: Record<string, ChatMessage>;
+  auditLogs: Record<string, AuditLog>;
+  deletedUserCedulas: string[];
+  deletedTaskIds: string[];
+  deletedEventIds: string[];
+  updatedAt: string;
+}
+
+export function readPermanentVault(): PermanentDataVault {
+  if (typeof window === 'undefined') {
+    return {
+      users: {},
+      tasks: {},
+      calendarEvents: {},
+      chatMessages: {},
+      auditLogs: {},
+      deletedUserCedulas: [],
+      deletedTaskIds: [],
+      deletedEventIds: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  try {
+    const raw = window.localStorage.getItem(PERMANENT_VAULT_STORAGE_KEY);
+    if (!raw) {
+      return {
+        users: {},
+        tasks: {},
+        calendarEvents: {},
+        chatMessages: {},
+        auditLogs: {},
+        deletedUserCedulas: [],
+        deletedTaskIds: [],
+        deletedEventIds: [],
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    const parsed = JSON.parse(raw) as Partial<PermanentDataVault>;
+    return {
+      users: parsed.users || {},
+      tasks: parsed.tasks || {},
+      calendarEvents: parsed.calendarEvents || {},
+      chatMessages: parsed.chatMessages || {},
+      auditLogs: parsed.auditLogs || {},
+      deletedUserCedulas: Array.isArray(parsed.deletedUserCedulas) ? parsed.deletedUserCedulas : [],
+      deletedTaskIds: Array.isArray(parsed.deletedTaskIds) ? parsed.deletedTaskIds : [],
+      deletedEventIds: Array.isArray(parsed.deletedEventIds) ? parsed.deletedEventIds : [],
+      updatedAt: parsed.updatedAt || new Date().toISOString(),
+    };
+  } catch {
+    return {
+      users: {},
+      tasks: {},
+      calendarEvents: {},
+      chatMessages: {},
+      auditLogs: {},
+      deletedUserCedulas: [],
+      deletedTaskIds: [],
+      deletedEventIds: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+}
+
+export function writePermanentVault(vault: PermanentDataVault) {
+  if (typeof window === 'undefined') return;
+  try {
+    vault.updatedAt = new Date().toISOString();
+    window.localStorage.setItem(PERMANENT_VAULT_STORAGE_KEY, JSON.stringify(vault));
+  } catch (err) {
+    console.warn('No se pudo actualizar el espejo local de persistencia:', err);
+  }
+}
+
+export function syncCollectionToPermanentVault<T>(
+  collectionType: 'users' | 'tasks' | 'calendarEvents' | 'chatMessages' | 'auditLogs',
+  items: T[],
+  getKey: (item: T) => string
+) {
+  const vault = readPermanentVault();
+  const targetMap = { ...(vault[collectionType] as Record<string, T>) };
+  for (const item of items) {
+    const key = getKey(item);
+    if (key) {
+      targetMap[key] = item;
+    }
+  }
+  (vault[collectionType] as Record<string, T>) = targetMap;
+  writePermanentVault(vault);
+}
+
+async function syncWithCloudSqlApi(endpoint: string, method: 'POST' | 'DELETE', body?: unknown) {
+  try {
+    const token = await refreshInMemoryIdToken();
+    if (!token) return;
+    await fetch(endpoint, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    console.error('Cloud SQL API sync warning:', err);
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -82,7 +196,7 @@ export function sanitizeUserPayload(user: AppUser) {
     cedula: cleanCedula,
     name: String(user.name || (isSingleAdmin ? 'Administrador Principal ULEP' : 'Usuario')).trim().slice(0, 100),
     password: String(user.password || (isSingleAdmin ? SINGLE_ADMIN_CEDULA : '1234')).slice(0, 100),
-    role: isSingleAdmin ? 'admin' : 'user',
+    role: isSingleAdmin ? 'admin' as const : 'user' as const,
     email: String(user.email || '').slice(0, 120),
     department: String(user.department || 'General').slice(0, 80),
     isOnline: Boolean(user.isOnline),
@@ -93,11 +207,11 @@ export function sanitizeUserPayload(user: AppUser) {
     canSendChat: isSingleAdmin ? true : Boolean(user.canSendChat),
     canViewVault: isSingleAdmin ? true : Boolean(user.canViewVault),
     canExportReports: isSingleAdmin ? true : Boolean(user.canExportReports),
-    approvalStatus: isSingleAdmin
+    approvalStatus: (isSingleAdmin
       ? 'aprobado'
       : user.approvalStatus && ['aprobado', 'pendiente', 'rechazado'].includes(user.approvalStatus)
       ? user.approvalStatus
-      : 'aprobado',
+      : 'aprobado') as 'aprobado' | 'pendiente' | 'rechazado',
     cedulaIssuePlace: String(user.cedulaIssuePlace || '').trim().slice(0, 100),
     cedulaIssueDate: String(user.cedulaIssueDate || '').trim().slice(0, 30),
     birthDate: String(user.birthDate || '').trim().slice(0, 30),
@@ -126,8 +240,8 @@ export function sanitizeTaskPayload(task: Omit<TaskItem, 'id'>) {
   return {
     title: String(task.title || 'Sin título').trim().slice(0, 180),
     description: String(task.description || '').slice(0, 2000),
-    priority: ['baja', 'media', 'alta', 'critica'].includes(task.priority) ? task.priority : 'media',
-    status: ['pendiente', 'en_progreso', 'completada'].includes(task.status) ? task.status : 'pendiente',
+    priority: (['baja', 'media', 'alta', 'critica'].includes(task.priority) ? task.priority : 'media') as TaskItem['priority'],
+    status: (['pendiente', 'en_progreso', 'completada'].includes(task.status) ? task.status : 'pendiente') as TaskItem['status'],
     progress: Math.min(100, Math.max(0, Number(task.progress) || 0)),
     tags: String(task.tags || '').slice(0, 300),
     assignedToCedula: String(task.assignedToCedula || '').slice(0, 20),
@@ -160,16 +274,22 @@ export async function recordAuditLog(params: {
   const payload = {
     actorCedula: String(params.actorCedula || '0000').slice(0, 20),
     actorName: String(params.actorName || 'Sistema').slice(0, 100),
-    actorRole: params.actorRole === 'admin' ? 'admin' : 'user',
+    actorRole: (params.actorRole === 'admin' ? 'admin' : 'user') as 'admin' | 'user',
     actionType: String(params.actionType || 'ACCION').slice(0, 60),
     module: String(params.module || 'SISTEMA').slice(0, 60),
     description: String(params.description || '').slice(0, 500),
     targetId: String(params.targetId || '').slice(0, 128),
     timestamp: new Date().toISOString().slice(0, 50),
-    severity: params.severity || 'info',
+    severity: (params.severity || 'info') as 'info' | 'warning' | 'critical',
   };
+
+  const vault = readPermanentVault();
+  vault.auditLogs[logId] = { id: logId, ...payload };
+  writePermanentVault(vault);
+
   try {
-    await setDoc(doc(db, 'audit_logs', logId), payload);
+    await setDoc(doc(db, 'audit_logs', logId), payload, { merge: true });
+    void syncWithCloudSqlApi('/api/audit-logs', 'POST', { id: logId, ...payload });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -179,8 +299,15 @@ export async function saveUserToFirestore(user: AppUser) {
   const cedulaId = cleanId(user.cedula);
   const path = `app_users/${cedulaId}`;
   const payload = sanitizeUserPayload({ ...user, cedula: cedulaId });
+
+  const vault = readPermanentVault();
+  vault.users[cedulaId] = payload;
+  vault.deletedUserCedulas = vault.deletedUserCedulas.filter(c => c !== cedulaId);
+  writePermanentVault(vault);
+
   try {
-    await setDoc(doc(db, 'app_users', cedulaId), payload);
+    await setDoc(doc(db, 'app_users', cedulaId), payload, { merge: true });
+    void syncWithCloudSqlApi('/api/users', 'POST', payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -191,9 +318,17 @@ export async function deleteUserFromFirestore(cedula: string) {
   if (cleanCed === SINGLE_ADMIN_CEDULA) {
     return;
   }
+  const vault = readPermanentVault();
+  delete vault.users[cleanCed];
+  if (!vault.deletedUserCedulas.includes(cleanCed)) {
+    vault.deletedUserCedulas.push(cleanCed);
+  }
+  writePermanentVault(vault);
+
   const path = `app_users/${cleanCed}`;
   try {
     await deleteDoc(doc(db, 'app_users', cleanCed));
+    void syncWithCloudSqlApi(`/api/users/${encodeURIComponent(cleanCed)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -203,17 +338,32 @@ export async function saveTaskToFirestore(task: TaskItem) {
   const taskId = cleanId(task.id);
   const path = `tasks/${taskId}`;
   const payload = sanitizeTaskPayload(task);
+
+  const vault = readPermanentVault();
+  vault.tasks[taskId] = { id: taskId, ...payload };
+  vault.deletedTaskIds = vault.deletedTaskIds.filter(id => id !== taskId);
+  writePermanentVault(vault);
+
   try {
-    await setDoc(doc(db, 'tasks', taskId), payload);
+    await setDoc(doc(db, 'tasks', taskId), payload, { merge: true });
+    void syncWithCloudSqlApi('/api/tasks', 'POST', { id: taskId, ...payload });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
 export async function deleteTaskFromFirestore(taskId: string) {
+  const vault = readPermanentVault();
+  delete vault.tasks[taskId];
+  if (!vault.deletedTaskIds.includes(taskId)) {
+    vault.deletedTaskIds.push(taskId);
+  }
+  writePermanentVault(vault);
+
   const path = `tasks/${taskId}`;
   try {
     await deleteDoc(doc(db, 'tasks', taskId));
+    void syncWithCloudSqlApi(`/api/tasks/${encodeURIComponent(taskId)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -225,14 +375,20 @@ export async function saveChatMessageToFirestore(msg: Omit<ChatMessage, 'id'>, c
   const payload = {
     senderCedula: String(msg.senderCedula).slice(0, 20),
     senderName: String(msg.senderName).slice(0, 100),
-    senderRole: msg.senderRole === 'admin' ? 'admin' : 'user',
+    senderRole: (msg.senderRole === 'admin' ? 'admin' : 'user') as 'admin' | 'user',
     text: String(msg.text).trim().slice(0, 1000),
     channel: String(msg.channel || 'general').slice(0, 50),
     relatedTaskId: String(msg.relatedTaskId || '').slice(0, 128),
     timestamp: String(msg.timestamp || new Date().toISOString()).slice(0, 50),
   };
+
+  const vault = readPermanentVault();
+  vault.chatMessages[msgId] = { id: msgId, ...payload };
+  writePermanentVault(vault);
+
   try {
-    await setDoc(doc(db, 'chat_messages', msgId), payload);
+    await setDoc(doc(db, 'chat_messages', msgId), payload, { merge: true });
+    void syncWithCloudSqlApi('/api/chat-messages', 'POST', { id: msgId, ...payload });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -245,151 +401,65 @@ export async function saveCalendarEventToFirestore(ev: CalendarEvent) {
     title: String(ev.title || 'Evento').trim().slice(0, 150),
     date: String(ev.date || '').slice(0, 50),
     time: String(ev.time || '09:00').slice(0, 20),
-    type: ['entrega', 'reunion', 'auditoria', 'hito', 'actividad'].includes(ev.type) ? ev.type : 'actividad',
+    type: (['entrega', 'reunion', 'auditoria', 'hito', 'actividad'].includes(ev.type) ? ev.type : 'actividad') as CalendarEvent['type'],
     description: String(ev.description || '').slice(0, 500),
     createdByCedula: String(ev.createdByCedula || '').slice(0, 20),
     createdByName: String(ev.createdByName || '').slice(0, 100),
     linkedTaskId: String(ev.linkedTaskId || '').slice(0, 128),
   };
+
+  const vault = readPermanentVault();
+  vault.calendarEvents[evId] = { id: evId, ...payload };
+  vault.deletedEventIds = vault.deletedEventIds.filter(id => id !== evId);
+  writePermanentVault(vault);
+
   try {
-    await setDoc(doc(db, 'calendar_events', evId), payload);
+    await setDoc(doc(db, 'calendar_events', evId), payload, { merge: true });
+    void syncWithCloudSqlApi('/api/calendar-events', 'POST', { id: evId, ...payload });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
 export async function deleteCalendarEventFromFirestore(eventId: string) {
+  const vault = readPermanentVault();
+  delete vault.calendarEvents[eventId];
+  if (!vault.deletedEventIds.includes(eventId)) {
+    vault.deletedEventIds.push(eventId);
+  }
+  writePermanentVault(vault);
+
   const path = `calendar_events/${eventId}`;
   try {
     await deleteDoc(doc(db, 'calendar_events', eventId));
+    void syncWithCloudSqlApi(`/api/calendar-events/${encodeURIComponent(eventId)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
-const DEMO_USER_CEDULAS = new Set([
-  '10000001',
-  '10203040',
-  '20304050',
-  '30405060',
-  '99001122',
-]);
-
-const DEMO_TASK_IDS = new Set([
-  'task_cierre_fiscal_01',
-  'task_migracion_ssl_02',
-  'task_auditoria_iso_03',
-  'task_backup_mensual_04',
-  'task_reporte_kpi_05',
-  'task_ejemplo_plantilla_01',
-]);
-
-const DEMO_EVENT_IDS = new Set([
-  'ev_cierre_01',
-  'ev_comite_02',
-  'ev_ejemplo_plantilla_01',
-  'ev_sync_task_cierre_fiscal_01',
-  'ev_sync_task_migracion_ssl_02',
-  'ev_sync_task_auditoria_iso_03',
-  'ev_sync_task_backup_mensual_04',
-  'ev_sync_task_reporte_kpi_05',
-]);
-
-const DEMO_CHAT_IDS = new Set(['msg_welcome_01', 'msg_welcome_02']);
-
+/**
+ * Inicializa y reconcilia la base de datos de producción sin borrar NINGÚN dato existente.
+ * Garantiza que al actualizar o desplegar de Google AI Studio a GitHub todos los registros
+ * permanezcan intactos en Firestore, Cloud SQL y la bóveda persistente.
+ */
 export async function seedInitialDatabaseIfEmpty() {
   try {
     const isoNow = new Date().toISOString();
 
-    const [usersSnap, tasksSnap, eventsSnap, chatSnap, logsSnap] = await Promise.all([
-      getDocs(query(collection(db, 'app_users'), limit(200))),
-      getDocs(query(collection(db, 'tasks'), limit(200))),
-      getDocs(query(collection(db, 'calendar_events'), limit(200))),
-      getDocs(query(collection(db, 'chat_messages'), limit(200))),
-      getDocs(query(collection(db, 'audit_logs'), limit(200))),
+    const [adminDocSnap, usersSnap, tasksSnap, eventsSnap, chatSnap] = await Promise.all([
+      getDoc(doc(db, 'app_users', SINGLE_ADMIN_CEDULA)),
+      getDocs(query(collection(db, 'app_users'), limit(500))),
+      getDocs(query(collection(db, 'tasks'), limit(500))),
+      getDocs(query(collection(db, 'calendar_events'), limit(500))),
+      getDocs(query(collection(db, 'chat_messages'), limit(500))),
     ]);
 
-    let singleAdminExists = false;
-
-    // 1. Limpiar usuarios de prueba y asegurar que solo exista el Administrador Único (902050377) como admin
-    for (const userDoc of usersSnap.docs) {
-      const data = userDoc.data() as AppUser;
-      const docCedula = data.cedula || userDoc.id;
-
-      if (DEMO_USER_CEDULAS.has(docCedula) || DEMO_USER_CEDULAS.has(userDoc.id)) {
-        await deleteDoc(doc(db, 'app_users', userDoc.id));
-        continue;
-      }
-
-      if (docCedula === SINGLE_ADMIN_CEDULA) {
-        singleAdminExists = true;
-        if (data.role !== 'admin' || data.approvalStatus !== 'aprobado') {
-          await saveUserToFirestore({
-            ...data,
-            cedula: SINGLE_ADMIN_CEDULA,
-            role: 'admin',
-            approvalStatus: 'aprobado',
-            password: data.password || SINGLE_ADMIN_CEDULA,
-          });
-        }
-      } else if (data.role === 'admin') {
-        await saveUserToFirestore({
-          ...data,
-          cedula: docCedula,
-          role: 'user',
-        });
-      }
-    }
-
-    // 2. Eliminar tareas de demostración/prueba
-    for (const taskDoc of tasksSnap.docs) {
-      const tData = taskDoc.data() as Partial<TaskItem>;
-      if (
-        DEMO_TASK_IDS.has(taskDoc.id) ||
-        (tData.createdByCedula && DEMO_USER_CEDULAS.has(tData.createdByCedula)) ||
-        (tData.assignedToCedula && DEMO_USER_CEDULAS.has(tData.assignedToCedula))
-      ) {
-        await deleteDoc(doc(db, 'tasks', taskDoc.id));
-      }
-    }
-
-    // 3. Eliminar eventos de calendario de demostración/prueba
-    for (const evDoc of eventsSnap.docs) {
-      const evData = evDoc.data() as Partial<CalendarEvent>;
-      if (
-        DEMO_EVENT_IDS.has(evDoc.id) ||
-        (evData.createdByCedula && DEMO_USER_CEDULAS.has(evData.createdByCedula)) ||
-        (evData.linkedTaskId && DEMO_TASK_IDS.has(evData.linkedTaskId))
-      ) {
-        await deleteDoc(doc(db, 'calendar_events', evDoc.id));
-      }
-    }
-
-    // 4. Eliminar mensajes de chat de demostración/prueba
-    for (const msgDoc of chatSnap.docs) {
-      const msgData = msgDoc.data() as Partial<ChatMessage>;
-      if (
-        DEMO_CHAT_IDS.has(msgDoc.id) ||
-        (msgData.senderCedula && DEMO_USER_CEDULAS.has(msgData.senderCedula))
-      ) {
-        await deleteDoc(doc(db, 'chat_messages', msgDoc.id));
-      }
-    }
-
-    // 5. Eliminar registros de auditoría generados por cuentas de prueba
-    for (const logDoc of logsSnap.docs) {
-      const logData = logDoc.data() as Partial<AuditLog>;
-      if (
-        (logData.actorCedula && DEMO_USER_CEDULAS.has(logData.actorCedula)) ||
-        (logData.targetId && (DEMO_USER_CEDULAS.has(logData.targetId) || DEMO_TASK_IDS.has(logData.targetId)))
-      ) {
-        await deleteDoc(doc(db, 'audit_logs', logDoc.id));
-      }
-    }
-
-    // 6. Crear el único Administrador Principal (902050377) si aún no existe
-    if (!singleAdminExists) {
-      const primaryAdmin: AppUser = {
+    // 1. Asegurar que el Administrador Único (902050377) exista sin sobreescribir su contraseña ni sus datos si ya fue creado
+    if (!adminDocSnap.exists()) {
+      const vault = readPermanentVault();
+      const cachedAdmin = vault.users[SINGLE_ADMIN_CEDULA];
+      const primaryAdmin: AppUser = cachedAdmin || {
         cedula: SINGLE_ADMIN_CEDULA,
         name: 'Administrador Principal ULEP',
         password: SINGLE_ADMIN_CEDULA,
@@ -407,10 +477,70 @@ export async function seedInitialDatabaseIfEmpty() {
         canExportReports: true,
         createdAt: isoNow,
       };
-      await saveUserToFirestore(primaryAdmin);
+      await saveUserToFirestore({
+        ...primaryAdmin,
+        cedula: SINGLE_ADMIN_CEDULA,
+        role: 'admin',
+        approvalStatus: 'aprobado',
+      });
+    } else {
+      const adminData = adminDocSnap.data() as AppUser;
+      if (adminData.role !== 'admin' || adminData.approvalStatus !== 'aprobado') {
+        await setDoc(
+          doc(db, 'app_users', SINGLE_ADMIN_CEDULA),
+          {
+            role: 'admin',
+            approvalStatus: 'aprobado',
+            canCreateTasks: true,
+            canEditTasks: true,
+            canDeleteTasks: true,
+            canSendChat: true,
+            canViewVault: true,
+            canExportReports: true,
+          },
+          { merge: true }
+        );
+      }
+    }
+
+    // 2. Reconciliación automática: si hay datos guardados en la bóveda local que no estén aún en Firestore, restaurarlos sin borrar nada
+    const vault = readPermanentVault();
+    const deletedUsers = new Set(vault.deletedUserCedulas);
+    const deletedTasks = new Set(vault.deletedTaskIds);
+    const deletedEvents = new Set(vault.deletedEventIds);
+
+    const remoteUserIds = new Set(usersSnap.docs.map(d => d.id));
+    for (const [ced, localUser] of Object.entries(vault.users)) {
+      if (ced && !remoteUserIds.has(ced) && !deletedUsers.has(ced)) {
+        await setDoc(doc(db, 'app_users', ced), sanitizeUserPayload(localUser), { merge: true });
+      }
+    }
+
+    const remoteTaskIds = new Set(tasksSnap.docs.map(d => d.id));
+    for (const [tId, localTask] of Object.entries(vault.tasks)) {
+      if (tId && !remoteTaskIds.has(tId) && !deletedTasks.has(tId)) {
+        await setDoc(doc(db, 'tasks', tId), sanitizeTaskPayload(localTask), { merge: true });
+      }
+    }
+
+    const remoteEventIds = new Set(eventsSnap.docs.map(d => d.id));
+    for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
+      if (evId && !remoteEventIds.has(evId) && !deletedEvents.has(evId)) {
+        const { id: _ignore, ...evPayload } = localEv;
+        await setDoc(doc(db, 'calendar_events', evId), evPayload, { merge: true });
+      }
+    }
+
+    const remoteChatIds = new Set(chatSnap.docs.map(d => d.id));
+    for (const [msgId, localMsg] of Object.entries(vault.chatMessages)) {
+      if (msgId && !remoteChatIds.has(msgId)) {
+        const { id: _ignore, ...msgPayload } = localMsg;
+        await setDoc(doc(db, 'chat_messages', msgId), msgPayload, { merge: true });
+      }
     }
   } catch (err) {
-    console.error('Error initializing production database:', err);
+    console.error('Error verifying persistent database:', err);
   }
 }
+
 

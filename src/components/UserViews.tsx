@@ -9,6 +9,7 @@ import {
 
 interface UserViewsProps {
   currentUser: AppUser;
+  users?: AppUser[];
   tasks: TaskItem[];
   onOpenNewTask: () => void;
   deviceMode?: 'mobile' | 'tablet' | 'pc';
@@ -76,6 +77,7 @@ const SECTIONS: PrioritySection[] = [
 
 export const UserViews: React.FC<UserViewsProps> = ({
   currentUser,
+  users = [],
   tasks,
   onOpenNewTask,
   deviceMode = 'pc',
@@ -90,6 +92,14 @@ export const UserViews: React.FC<UserViewsProps> = ({
     baja: '',
   });
 
+  // Encargado seleccionado en el creador rápido por sección ('ABIERTA' o cédula de cualquier usuario)
+  const [quickAssignees, setQuickAssignees] = useState<Record<TaskPriority, string>>({
+    critica: 'ABIERTA',
+    alta: 'ABIERTA',
+    media: currentUser.cedula,
+    baja: currentUser.cedula,
+  });
+
   // En Teléfono permite abrir/cerrar el input rápido para mantener la vista limpia
   const [mobileQuickAddOpen, setMobileQuickAddOpen] = useState<Record<TaskPriority, boolean>>({
     critica: false,
@@ -98,15 +108,16 @@ export const UserViews: React.FC<UserViewsProps> = ({
     baja: false,
   });
 
-  // Filtro de prioridad y estado dentro del Botón Tipo Filtro
+  // Filtro de prioridad, estado y filtros rápidos en la Lista de Chequeo
   const [selectedPriorityTab, setSelectedPriorityTab] = useState<'todas' | TaskPriority>('todas');
   const [statusFilter, setStatusFilter] = useState<'todos' | TaskStatus>('todos');
+  const [quickFilter, setQuickFilter] = useState<'ninguno' | 'mis_pendientes' | 'completadas' | 'criticas'>('ninguno');
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
 
   // Vista en cuadrícula de 2 columnas o lista en PC/Tablet
   const [desktopGridLayout, setDesktopGridLayout] = useState<'stack' | 'grid'>('stack');
 
-  // Tarea seleccionada exclusivamente para VER (Solo lectura, no editable)
+  // Tarea seleccionada exclusivamente para VER
   const [viewingTask, setViewingTask] = useState<TaskItem | null>(null);
 
   // Ocultar o mostrar hechas
@@ -115,13 +126,31 @@ export const UserViews: React.FC<UserViewsProps> = ({
   // Botón corredizo: Tareas Personales vs Tareas del Grupo Empresarial
   const [taskScope, setTaskScope] = useState<'personales' | 'grupo'>('personales');
 
-  // Filtrar según el botón corredizo (Personales vs Grupo Empresarial)
+  const isTaskVisibleInPersonal = (t: TaskItem) =>
+    t.assignedToCedula === currentUser.cedula ||
+    t.createdByCedula === currentUser.cedula ||
+    t.assignedToCedula === 'ABIERTA';
+
+  // Contadores para los filtros rápidos
+  const myPendingTasksCount = tasks.filter(
+    t => isTaskVisibleInPersonal(t) && t.status !== 'completada'
+  ).length;
+  const completedTasksCount = tasks.filter(t => {
+    const inScope = taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true;
+    return inScope && t.status === 'completada';
+  }).length;
+  const criticalTasksCount = tasks.filter(t => {
+    const inScope = taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true;
+    return inScope && t.priority === 'critica';
+  }).length;
+
+  // Filtrar según el botón corredizo (Personales vs Grupo Empresarial) y filtro rápido activo
   const scopedTasks = tasks.filter(t => {
+    if (quickFilter === 'mis_pendientes') {
+      return isTaskVisibleInPersonal(t) && t.status !== 'completada';
+    }
     if (taskScope === 'personales') {
-      return (
-        t.assignedToCedula === currentUser.cedula ||
-        t.createdByCedula === currentUser.cedula
-      );
+      return isTaskVisibleInPersonal(t);
     }
     return true; // Tareas del Grupo Empresarial
   });
@@ -171,16 +200,47 @@ export const UserViews: React.FC<UserViewsProps> = ({
     });
   };
 
+  // Cambiar encargado de una tarea existente (a cualquier usuario o Abierta)
+  const handleChangeTaskAssignee = async (task: TaskItem, targetCedula: string) => {
+    const isOpen = targetCedula === 'ABIERTA';
+    const targetUser = isOpen ? null : users.find(u => u.cedula === targetCedula) || currentUser;
+    const updated: TaskItem = {
+      ...task,
+      assignedToCedula: isOpen ? 'ABIERTA' : targetUser!.cedula,
+      assignedToName: isOpen ? 'Abierta (Cualquiera puede realizarla)' : targetUser!.name,
+    };
+    await saveTaskToFirestore(updated);
+    if (viewingTask && viewingTask.id === task.id) {
+      setViewingTask(updated);
+    }
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'ASIGNAR_ENCARGADO_TAREA',
+      module: 'LISTA_CHEQUEO',
+      description: `Asignó la tarea "${task.title}" a: ${updated.assignedToName}.`,
+      targetId: task.id,
+      severity: 'info',
+    });
+  };
+
   // Toggle directo con la casilla: si está Hecha pasa a Iniciada, si no pasa a Hecha
   const handleToggleCheck = async (task: TaskItem) => {
     const nextStatus: TaskStatus = task.status === 'completada' ? 'pendiente' : 'completada';
     await handleSetStatus(task, nextStatus);
   };
 
-  // Agregar tarea instantánea con Enter o botón
+  // Agregar tarea instantánea con Enter o botón (con opción de encargado o abierta)
   const handleAddQuick = async (priority: TaskPriority) => {
     const text = (quickInputs[priority] || '').trim();
     if (!text) return;
+
+    const selectedAssignee = quickAssignees[priority] || 'ABIERTA';
+    const isOpenTask = selectedAssignee === 'ABIERTA';
+    const assignedUser = isOpenTask
+      ? null
+      : users.find(u => u.cedula === selectedAssignee) || currentUser;
 
     const newTask: TaskItem = {
       id: cleanId(`chk_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`),
@@ -190,8 +250,10 @@ export const UserViews: React.FC<UserViewsProps> = ({
       status: 'pendiente',
       progress: 0,
       tags: priority.toUpperCase(),
-      assignedToCedula: currentUser.cedula,
-      assignedToName: currentUser.name,
+      assignedToCedula: isOpenTask ? 'ABIERTA' : assignedUser!.cedula,
+      assignedToName: isOpenTask
+        ? 'Abierta (Cualquiera puede realizarla)'
+        : assignedUser!.name,
       createdByCedula: currentUser.cedula,
       createdByName: currentUser.name,
       createdAt: new Date().toISOString(),
@@ -211,7 +273,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
       actorRole: currentUser.role,
       actionType: 'AGREGAR_CHEQUEO',
       module: 'LISTA_CHEQUEO',
-      description: `Agregó a [${priority.toUpperCase()}]: "${text}".`,
+      description: `Agregó a [${priority.toUpperCase()}] (${newTask.assignedToName}): "${text}".`,
       targetId: newTask.id,
       severity: 'info',
     });
@@ -241,26 +303,59 @@ export const UserViews: React.FC<UserViewsProps> = ({
     });
   };
 
+  const handleApplyQuickFilter = (mode: 'ninguno' | 'mis_pendientes' | 'completadas' | 'criticas') => {
+    if (quickFilter === mode) {
+      setQuickFilter('ninguno');
+      setSelectedPriorityTab('todas');
+      setStatusFilter('todos');
+      setShowCompleted(true);
+      return;
+    }
+    setQuickFilter(mode);
+    if (mode === 'mis_pendientes') {
+      setTaskScope('personales');
+      setSelectedPriorityTab('todas');
+      setStatusFilter('todos');
+      setShowCompleted(false);
+    } else if (mode === 'completadas') {
+      setSelectedPriorityTab('todas');
+      setStatusFilter('completada');
+      setShowCompleted(true);
+    } else if (mode === 'criticas') {
+      setSelectedPriorityTab('critica');
+      setStatusFilter('todos');
+      setShowCompleted(true);
+    } else {
+      setSelectedPriorityTab('todas');
+      setStatusFilter('todos');
+      setShowCompleted(true);
+    }
+  };
+
   const visibleSections =
     selectedPriorityTab === 'todas'
       ? SECTIONS
       : SECTIONS.filter(s => s.key === selectedPriorityTab);
 
   const activeFilterCount =
+    (quickFilter !== 'ninguno' ? 1 : 0) +
     (selectedPriorityTab !== 'todas' ? 1 : 0) +
     (statusFilter !== 'todos' ? 1 : 0) +
     (!showCompleted ? 1 : 0);
 
   return (
     <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>
-      {/* Barra Superior con el Botón Corredizo y el Botón Tipo Filtro */}
-      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs relative">
+      {/* Barra Superior con el Botón Corredizo, Botón Crear Tarea, Filtros Rápidos y Botón Tipo Filtro */}
+      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs relative space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           {/* Botón Corredizo: Tareas Personales / Tareas del Grupo Empresarial */}
           <div className="grid grid-cols-2 sm:inline-flex items-center p-1 bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl shadow-2xs w-full sm:w-auto">
             <button
               type="button"
-              onClick={() => setTaskScope('personales')}
+              onClick={() => {
+                setTaskScope('personales');
+                if (quickFilter === 'ninguno') setShowCompleted(true);
+              }}
               className={`min-h-[42px] sm:min-h-0 px-3 sm:px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 taskScope === 'personales'
                   ? 'bg-[#0B2559] text-white shadow-xs'
@@ -272,7 +367,13 @@ export const UserViews: React.FC<UserViewsProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setTaskScope('grupo')}
+              onClick={() => {
+                setTaskScope('grupo');
+                if (quickFilter === 'mis_pendientes') {
+                  setQuickFilter('ninguno');
+                  setShowCompleted(true);
+                }
+              }}
               className={`min-h-[42px] sm:min-h-0 px-3 sm:px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 taskScope === 'grupo'
                   ? 'bg-[#0B2559] text-white shadow-xs'
@@ -286,12 +387,21 @@ export const UserViews: React.FC<UserViewsProps> = ({
             </button>
           </div>
 
-          {/* Botón Tipo Filtro Único */}
+          {/* Acciones Principales: Botón Crear Tarea (Asignar a cualquiera o Abierta) + Botón Filtrar */}
           <div className="flex items-center justify-end gap-2 shrink-0 relative">
             <button
               type="button"
+              onClick={onOpenNewTask}
+              className="min-h-[42px] sm:min-h-0 flex-1 sm:flex-initial px-4 py-2 text-xs font-bold rounded-xl bg-[#0B2559] hover:bg-[#15397A] text-white border border-[#0B2559] transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-xs"
+            >
+              <i className="fi fi-rr-plus text-xs text-[#B3D9FF]" />
+              <span>Crear Tarea</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setFilterMenuOpen(prev => !prev)}
-              className={`min-h-[42px] sm:min-h-0 w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl border transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-2xs ${
+              className={`min-h-[42px] sm:min-h-0 flex-1 sm:flex-initial px-4 py-2 text-xs font-bold rounded-xl border transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-2xs ${
                 filterMenuOpen || activeFilterCount > 0
                   ? 'bg-[#0B2559] text-white border-[#0B2559]'
                   : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#EAF3FF]'
@@ -323,6 +433,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
                     <button
                       type="button"
                       onClick={() => {
+                        setQuickFilter('ninguno');
                         setSelectedPriorityTab('todas');
                         setStatusFilter('todos');
                         setShowCompleted(true);
@@ -474,6 +585,91 @@ export const UserViews: React.FC<UserViewsProps> = ({
             )}
           </div>
         </div>
+
+        {/* Barra de Filtros Rápidos: Mis tareas pendientes, Tareas completadas, Tareas con prioridad crítica */}
+        <div className="pt-2.5 border-t border-[#EAF3FF] flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[#0B2559]/70 flex items-center gap-1.5 mr-1">
+            <i className="fi fi-rr-bolt text-xs text-[#3B82F6]" />
+            <span>Filtros rápidos:</span>
+          </span>
+
+          <button
+            type="button"
+            onClick={() => handleApplyQuickFilter('mis_pendientes')}
+            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
+              quickFilter === 'mis_pendientes'
+                ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
+                : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#EAF3FF]'
+            }`}
+          >
+            <i className="fi fi-rr-time-fast text-xs shrink-0" />
+            <span>Mis tareas pendientes</span>
+            <span
+              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
+                quickFilter === 'mis_pendientes'
+                  ? 'bg-[#B3D9FF] text-[#0B2559]'
+                  : 'bg-white text-[#0B2559] border border-[#B3D9FF]'
+              }`}
+            >
+              {myPendingTasksCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleApplyQuickFilter('completadas')}
+            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
+              quickFilter === 'completadas'
+                ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                : 'bg-emerald-50/70 text-emerald-800 border-emerald-200 hover:bg-emerald-100/70'
+            }`}
+          >
+            <i className="fi fi-rr-check-circle text-xs shrink-0" />
+            <span>Tareas completadas</span>
+            <span
+              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
+                quickFilter === 'completadas'
+                  ? 'bg-white text-emerald-800'
+                  : 'bg-white text-emerald-800 border border-emerald-200'
+              }`}
+            >
+              {completedTasksCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleApplyQuickFilter('criticas')}
+            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
+              quickFilter === 'criticas'
+                ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                : 'bg-rose-50/80 text-rose-700 border-rose-200 hover:bg-rose-100/70'
+            }`}
+          >
+            <i className="fi fi-rr-flame text-xs shrink-0" />
+            <span>Tareas con prioridad crítica</span>
+            <span
+              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
+                quickFilter === 'criticas'
+                  ? 'bg-white text-rose-700'
+                  : 'bg-white text-rose-700 border border-rose-200'
+              }`}
+            >
+              {criticalTasksCount}
+            </span>
+          </button>
+
+          {quickFilter !== 'ninguno' && (
+            <button
+              type="button"
+              onClick={() => handleApplyQuickFilter('ninguno')}
+              className="min-h-[36px] sm:min-h-0 px-2.5 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors flex items-center gap-1 ml-auto"
+            >
+              <i className="fi fi-rr-cross-small text-sm" />
+              <span>Ver todas</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Secciones de la Lista Ordenadas por Importancia */}
@@ -494,9 +690,6 @@ export const UserViews: React.FC<UserViewsProps> = ({
               ? baseTasks
               : baseTasks.filter(t => t.status === statusFilter);
 
-          const inputValue = quickInputs[sec.key] || '';
-          const isQuickInputVisible = !isMobile || mobileQuickAddOpen[sec.key];
-
           return (
             <div
               key={sec.key}
@@ -515,28 +708,6 @@ export const UserViews: React.FC<UserViewsProps> = ({
                     · {activeTasks.length} pend.{doneTasks.length > 0 ? ` / ${doneTasks.length} hechas` : ''}
                   </span>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMobile) {
-                      setMobileQuickAddOpen(prev => ({
-                        ...prev,
-                        [sec.key]: !prev[sec.key],
-                      }));
-                      setTimeout(() => {
-                        const el = document.getElementById(`input_${sec.key}`);
-                        if (el) el.focus();
-                      }, 50);
-                    } else {
-                      const el = document.getElementById(`input_${sec.key}`);
-                      if (el) el.focus();
-                    }
-                  }}
-                  className={`min-h-[36px] sm:min-h-0 text-[11px] font-bold px-3 py-1 rounded-lg transition-colors shrink-0 whitespace-nowrap ${sec.buttonBg}`}
-                >
-                  + Agregar
-                </button>
               </div>
 
               {/* Items de la lista ordenados */}
@@ -561,7 +732,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
                         }`}
                       >
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                          {/* Casilla de verificación táctil y Nombre (Clic para ver detalles en solo lectura) */}
+                          {/* Casilla de verificación táctil y Nombre (Clic para ver detalles) */}
                           <div className="flex items-center gap-3 min-w-0 flex-1">
                             <button
                               type="button"
@@ -579,9 +750,9 @@ export const UserViews: React.FC<UserViewsProps> = ({
                             <div
                               onClick={() => setViewingTask(task)}
                               className="min-w-0 flex-1 cursor-pointer select-none"
-                              title="Haz clic para ver los detalles de la tarea (Solo lectura)"
+                              title="Haz clic para ver los detalles de la tarea"
                             >
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <span
                                   className={`text-xs sm:text-xs truncate transition-all ${
                                     isDone
@@ -593,12 +764,26 @@ export const UserViews: React.FC<UserViewsProps> = ({
                                 >
                                   {task.title}
                                 </span>
+                                {task.assignedToCedula === 'ABIERTA' ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+                                    <span>🌐 Abierta (Cualquiera)</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] whitespace-nowrap">
+                                    <i className="fi fi-rr-user text-[9px] text-[#3B82F6]" />
+                                    <span className="truncate max-w-[140px]">{task.assignedToName}</span>
+                                  </span>
+                                )}
                               </div>
 
                               {/* En PC y Tablet se muestra información adicional en línea; en Teléfono se oculta para que se vea más sencilla */}
                               {!isMobile && (
                                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#3B82F6] mt-0.5 tabular-nums">
-                                  <span>{task.assignedToName}</span>
+                                  <span>
+                                    {task.assignedToCedula === 'ABIERTA'
+                                      ? 'Encargado: Abierta (Cualquiera puede realizarla)'
+                                      : `Encargado: ${task.assignedToName}`}
+                                  </span>
                                   {task.dueDate && (
                                     <>
                                       <span>·</span>
@@ -660,12 +845,12 @@ export const UserViews: React.FC<UserViewsProps> = ({
                             </div>
 
                             <div className="flex items-center gap-1">
-                              {/* Botón Ver Detalles (Solo Lectura) */}
+                              {/* Botón Ver Detalles */}
                               <button
                                 type="button"
                                 onClick={() => setViewingTask(task)}
                                 className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-500 hover:text-[#0B2559] hover:bg-[#EAF3FF] rounded-lg transition-colors flex items-center justify-center"
-                                title="Ver detalles de la tarea (Solo lectura)"
+                                title="Ver detalles de la tarea"
                               >
                                 <i className="fi fi-rr-eye text-xs" />
                               </button>
@@ -689,46 +874,12 @@ export const UserViews: React.FC<UserViewsProps> = ({
                   })
                 )}
               </div>
-
-              {/* Input rápido al pie de la sección (En PC/Tablet siempre visible; en Teléfono desplegable con "+ Agregar") */}
-              {isQuickInputVisible && (
-                <div className="p-2.5 bg-[#FAFDFE] border-t border-[#EAF3FF]">
-                  <form
-                    onSubmit={e => {
-                      e.preventDefault();
-                      handleAddQuick(sec.key);
-                    }}
-                    className="flex items-center gap-2"
-                  >
-                    <input
-                      id={`input_${sec.key}`}
-                      type="text"
-                      value={inputValue}
-                      onChange={e =>
-                        setQuickInputs(prev => ({
-                          ...prev,
-                          [sec.key]: e.target.value,
-                        }))
-                      }
-                      placeholder={`+ Escribe una tarea en ${sec.name.toLowerCase()}...`}
-                      className="flex-1 min-h-[40px] sm:min-h-0 px-3 py-1.5 text-xs text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!inputValue.trim()}
-                      className={`min-h-[40px] sm:min-h-0 px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors shrink-0 disabled:opacity-30 ${sec.buttonBg}`}
-                    >
-                      Guardar
-                    </button>
-                  </form>
-                </div>
-              )}
             </div>
           );
         })}
       </div>
 
-      {/* MODAL DE VISTA EXCLUSIVA (SOLO LECTURA, NO EDITABLE - Bottom Sheet en Teléfono / Modal en PC y Tablet) */}
+      {/* MODAL DE DETALLE DE LA TAREA */}
       {viewingTask && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/50 backdrop-blur-xs">
           <div className="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl shadow-xl border border-[#B3D9FF] overflow-hidden max-h-[90vh] flex flex-col">
@@ -745,7 +896,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
                 </span>
                 <div>
                   <h3 className="text-sm font-bold text-[#0B2559]">Detalle de la Actividad</h3>
-                  <p className="text-[10px] text-[#3B82F6]">Vista de consulta rápida (No editable)</p>
+                  <p className="text-[10px] text-[#3B82F6]">Consulta de tarea y asignación de encargado</p>
                 </div>
               </div>
               <button
@@ -757,7 +908,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
               </button>
             </div>
 
-            {/* Contenido en Solo Lectura */}
+            {/* Contenido */}
             <div className="p-5 space-y-4 text-xs overflow-y-auto">
               {/* Título */}
               <div>
@@ -813,6 +964,32 @@ export const UserViews: React.FC<UserViewsProps> = ({
                 </div>
               </div>
 
+              {/* Selector de Encargado o Tarea Abierta */}
+              <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2">
+                <label className="block text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
+                  Encargado de la Tarea (Asignar a cualquiera o dejar Abierta)
+                </label>
+                <select
+                  value={viewingTask.assignedToCedula || 'ABIERTA'}
+                  onChange={e => handleChangeTaskAssignee(viewingTask, e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl focus:outline-none focus:border-[#0B2559]"
+                >
+                  <option value="ABIERTA">
+                    🌐 ABIERTA — Cualquiera puede realizarla
+                  </option>
+                  <option value={currentUser.cedula}>
+                    👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
+                  </option>
+                  {users
+                    .filter(u => u.cedula !== currentUser.cedula)
+                    .map(u => (
+                      <option key={u.cedula} value={u.cedula}>
+                        👥 {u.name} (C.C. {u.cedula})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
               {/* Datos de la Tarea (Prioridad, Fechas, Responsable) */}
               <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 tabular-nums">
                 <div>
@@ -830,9 +1007,11 @@ export const UserViews: React.FC<UserViewsProps> = ({
                 </div>
 
                 <div>
-                  <span className="text-slate-500">Responsable Asignado:</span>
+                  <span className="text-slate-500">Encargado Actual:</span>
                   <div className="font-bold text-[#0B2559] mt-0.5">
-                    {viewingTask.assignedToName || 'No asignado'}
+                    {viewingTask.assignedToCedula === 'ABIERTA'
+                      ? '🌐 Abierta (Cualquiera)'
+                      : viewingTask.assignedToName || 'No asignado'}
                   </div>
                 </div>
 

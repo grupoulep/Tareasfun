@@ -78,9 +78,11 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
 
   return (
     <div ref={containerRef} className="relative">
-      <label className="block text-xs font-bold text-[#0B2559] mb-1">
-        {label} {required ? '*' : ''}
-      </label>
+      {label && (
+        <label className="block text-xs font-bold text-[#0B2559] mb-1">
+          {label} {required ? '*' : ''}
+        </label>
+      )}
 
       {/* Botón principal con Lupa integrada */}
       <div className="flex items-stretch gap-1">
