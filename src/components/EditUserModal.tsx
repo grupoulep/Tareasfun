@@ -146,7 +146,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setSuccessMessage(null);
       setErrorMessage(null);
     }
-  }, [user, initialTab, isOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.cedula, initialTab, isOpen]);
 
   if (!isOpen || !user) return null;
 

@@ -40,7 +40,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [activeScreen, setActiveScreen] = useState<'main' | 'details' | 'vault'>('main');
   const [expandAllFields, setExpandAllFields] = useState<boolean | undefined>(undefined);
 
+  const DRAFT_STORAGE_KEY = 'ulep_new_task_draft_v1';
+
   useEffect(() => {
+    if (!isOpen) return;
+
     if (initialTask) {
       setTitle(initialTask.title);
       setDescription(initialTask.description);
@@ -59,24 +63,107 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setDirectLink(initialTask.directLink || '');
     } else {
       const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
-      setTitle('');
-      setDescription('');
-      setPriority('alta');
-      setStatus('pendiente');
-      setProgress(0);
-      setTags('Operativo, Entrega');
-      setCategory('Operaciones');
-      setAssignedToCedula(currentUser.cedula);
-      setDueDate(tomorrow.toISOString().split('T')[0]);
-      setDueTime('17:00');
-      setNotes('');
-      setAccessEmail('');
-      setAccessPassword('');
-      setDirectLink('');
+      try {
+        const savedDraft = sessionStorage.getItem(DRAFT_STORAGE_KEY);
+        if (savedDraft) {
+          const parsed = JSON.parse(savedDraft);
+          setTitle(parsed.title ?? '');
+          setDescription(parsed.description ?? '');
+          setPriority(parsed.priority ?? 'alta');
+          setStatus(parsed.status ?? 'pendiente');
+          setProgress(parsed.progress ?? 0);
+          setTags(parsed.tags ?? 'Operativo, Entrega');
+          setCategory(parsed.category ?? 'Operaciones');
+          setAssignedToCedula(parsed.assignedToCedula || currentUser.cedula);
+          setDueDate(parsed.dueDate || tomorrow.toISOString().split('T')[0]);
+          setDueTime(parsed.dueTime || '17:00');
+          setNotes(parsed.notes ?? '');
+          setAccessEmail(parsed.accessEmail ?? '');
+          setAccessPassword(parsed.accessPassword ?? '');
+          setDirectLink(parsed.directLink ?? '');
+        } else {
+          setTitle('');
+          setDescription('');
+          setPriority('alta');
+          setStatus('pendiente');
+          setProgress(0);
+          setTags('Operativo, Entrega');
+          setCategory('Operaciones');
+          setAssignedToCedula(currentUser.cedula);
+          setDueDate(tomorrow.toISOString().split('T')[0]);
+          setDueTime('17:00');
+          setNotes('');
+          setAccessEmail('');
+          setAccessPassword('');
+          setDirectLink('');
+        }
+      } catch {
+        setTitle('');
+        setDescription('');
+        setPriority('alta');
+        setStatus('pendiente');
+        setProgress(0);
+        setTags('Operativo, Entrega');
+        setCategory('Operaciones');
+        setAssignedToCedula(currentUser.cedula);
+        setDueDate(tomorrow.toISOString().split('T')[0]);
+        setDueTime('17:00');
+        setNotes('');
+        setAccessEmail('');
+        setAccessPassword('');
+        setDirectLink('');
+      }
     }
     setActiveScreen('main');
     setExpandAllFields(undefined);
-  }, [initialTask, isOpen, currentUser]);
+    // Solo se inicializa al abrir el modal o cambiar de tarea a editar; NUNCA se reinicia por actualizaciones en segundo plano
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialTask?.id]);
+
+  // Guardar borrador automático mientras se escribe una nueva tarea para que nunca se borre la información
+  useEffect(() => {
+    if (!isOpen || initialTask) return;
+    try {
+      sessionStorage.setItem(
+        DRAFT_STORAGE_KEY,
+        JSON.stringify({
+          title,
+          description,
+          priority,
+          status,
+          progress,
+          tags,
+          category,
+          assignedToCedula,
+          dueDate,
+          dueTime,
+          notes,
+          accessEmail,
+          accessPassword,
+          directLink,
+        })
+      );
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [
+    isOpen,
+    initialTask,
+    title,
+    description,
+    priority,
+    status,
+    progress,
+    tags,
+    category,
+    assignedToCedula,
+    dueDate,
+    dueTime,
+    notes,
+    accessEmail,
+    accessPassword,
+    directLink,
+  ]);
 
   if (!isOpen) return null;
 
@@ -128,6 +215,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       };
 
       await onSave(taskObj);
+      try {
+        sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
       onClose();
     } finally {
       setSaving(false);

@@ -237,38 +237,7 @@ export default function App() {
     }
   }, [currentUser?.cedula, currentUser?.role]);
 
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const markOnline = async () => {
-      try {
-        await saveUserToFirestore({
-          ...currentUser,
-          isOnline: true,
-          lastSeen: new Date().toISOString(),
-        });
-      } catch (e) {
-        console.error(e);
-      }
-    };
-
-    markOnline();
-    const interval = setInterval(markOnline, 45000);
-
-    const handleBeforeUnload = () => {
-      saveUserToFirestore({
-        ...currentUser,
-        isOnline: false,
-        lastSeen: new Date().toISOString(),
-      });
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [currentUser?.cedula]);
+  // Sin temporizador de inactividad ni recargas automáticas de presencia para evitar que se borre información al llenar formularios
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
