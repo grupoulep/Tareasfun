@@ -54,10 +54,12 @@ interface AdminViewsProps {
 }
 
 interface ResendSentRecord {
+  recordKey?: string;
   taskId: string;
   taskTitle: string;
   assignedToName: string;
   dueDate: string;
+  milestoneHours?: 24 | 12 | 6 | 2;
   recipient: string;
   messageText: string;
   sentAt: string;
@@ -161,15 +163,17 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Estados exclusivos del Panel Admin para el módulo de correos automáticos Resend (24h)
+  // Estados exclusivos del Panel Admin para el módulo de correos automáticos Resend (24h, 12h, 6h y 2h)
   const [resendScreen, setResendScreen] = useState<ResendScreen>('expiring_24h');
   const [resendHistory, setResendHistory] = useState<ResendSentRecord[]>([]);
-  const [resendSendingId, setResendSendingId] = useState<string | null>(null);
-  const [resendBannerMsg, setResendBannerMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (activeSection !== 'admin_resend') return;
-    fetch('/api/resend/status')
+    fetch('/api/resend/check-and-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks }),
+    })
       .then(r => r.json())
       .then(data => {
         if (Array.isArray(data?.sentHistory)) {
@@ -180,48 +184,6 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
         // Silencioso
       });
   }, [activeSection, tasks]);
-
-  const handleDispatchResend24h = async (targetTasks: TaskItem[], forceTaskId?: string) => {
-    setResendSendingId(forceTaskId || 'ALL');
-    setResendBannerMsg(null);
-    try {
-      const response = await fetch('/api/resend/check-and-notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tasks: targetTasks,
-          forceTaskId: forceTaskId || null,
-        }),
-      });
-      const data = await response.json();
-      if (Array.isArray(data?.sentHistory)) {
-        setResendHistory(data.sentHistory);
-      }
-      const dispatchedList: ResendSentRecord[] = Array.isArray(data?.dispatched) ? data.dispatched : [];
-      const sentCount = dispatchedList.filter(d => d.status === 'sent').length;
-      const missingKey = dispatchedList.some(d => d.status === 'missing_api_key');
-
-      if (sentCount > 0) {
-        setResendBannerMsg(
-          `Se envió correctamente ${sentCount} notificación(es) automática(s) al correo exclusivo fundacionulep@gmail.com.`
-        );
-      } else if (missingKey) {
-        setResendBannerMsg(
-          'Notificación registrada para fundacionulep@gmail.com (Configura RESEND_API_KEY en el entorno del servidor para el despacho SMTP/HTTP en vivo).'
-        );
-      } else if (dispatchedList.length > 0 && dispatchedList[0].errorDetail) {
-        setResendBannerMsg(`Aviso Resend: ${dispatchedList[0].errorDetail}`);
-      } else {
-        setResendBannerMsg(
-          'Verificación completada: Las tareas a 24 horas de vencer ya fueron notificadas a fundacionulep@gmail.com.'
-        );
-      }
-    } catch {
-      setResendBannerMsg('No se pudo contactar con el servicio de correo Resend en este momento.');
-    } finally {
-      setResendSendingId(null);
-    }
-  };
 
   const toggleUserExpand = (id: string) => {
     setExpandedUserIds(prev => ({ ...prev, [id]: !prev[id] }));
@@ -2503,16 +2465,25 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   }
 
   // ============================================================================
-  // 6. SECCIÓN EXCLUSIVA PANEL ADMIN: CORREOS AUTOMÁTICOS RESEND (24 HORAS)
+  // 6. SECCIÓN EXCLUSIVA PANEL ADMIN: CORREOS AUTOMÁTICOS RESEND (24h, 12h, 6h y 2h)
   // ============================================================================
   if (activeSection === 'admin_resend') {
     const nowMs = Date.now();
+    const getMilestoneHours = (iso: string): 24 | 12 | 6 | 2 | null => {
+      const dueMs = new Date(iso).getTime();
+      if (Number.isNaN(dueMs)) return null;
+      const diffMs = dueMs - nowMs;
+      if (diffMs <= 0 || diffMs > 24 * 60 * 60 * 1000) return null;
+      const diffHours = diffMs / (1000 * 60 * 60);
+      if (diffHours <= 2) return 2;
+      if (diffHours <= 6) return 6;
+      if (diffHours <= 12) return 12;
+      return 24;
+    };
+
     const tasksExpiringIn24h = tasks.filter(t => {
       if (t.status === 'completada' || !t.dueDate) return false;
-      const dueMs = new Date(t.dueDate).getTime();
-      if (Number.isNaN(dueMs)) return false;
-      const diffMs = dueMs - nowMs;
-      return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+      return getMilestoneHours(t.dueDate) !== null;
     });
 
     const formatReadableDate = (iso: string) => {
@@ -2551,7 +2522,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               }`}
             >
               <i className="fi fi-rr-envelope text-xs" />
-              <span>Pantalla 1: Tareas a 24 Horas de Vencer ({tasksExpiringIn24h.length})</span>
+              <span>Pantalla 1: Tareas Activas (24h · 12h · 6h · 2h) ({tasksExpiringIn24h.length})</span>
             </button>
             <button
               type="button"
@@ -2563,23 +2534,14 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               }`}
             >
               <i className="fi fi-rr-time-past text-xs" />
-              <span>Pantalla 2: Historial de Correos Enviados ({resendHistory.length})</span>
+              <span>Pantalla 2: Historial de Correos Automáticos ({resendHistory.length})</span>
             </button>
           </div>
 
-          <button
-            type="button"
-            disabled={resendSendingId !== null || tasksExpiringIn24h.length === 0}
-            onClick={() => handleDispatchResend24h(tasksExpiringIn24h)}
-            className="px-4 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] disabled:opacity-50 rounded-xl flex items-center gap-2 transition-colors shadow-2xs"
-          >
-            <i className="fi fi-rr-paper-plane text-xs text-[#B3D9FF]" />
-            <span>
-              {resendSendingId === 'ALL'
-                ? 'Enviando por Resend...'
-                : 'Ejecutar Envío Automático 24h Ahora'}
-            </span>
-          </button>
+          <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Envío Automático Activo (24h · 12h · 6h · 2h)</span>
+          </div>
         </div>
 
         {/* Cabecera informativa del servicio automático Resend */}
@@ -2588,10 +2550,10 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             <div>
               <h2 className="text-sm font-bold text-[#0B2559] flex items-center gap-2">
                 <i className="fi fi-rr-envelope text-sm text-[#3B82F6]" />
-                Conexión Automática Resend — Alertas de Tareas a 24 Horas de Vencer (Solo Panel Admin)
+                Monitoreo Automático Resend — Alertas Faltando 24h, 12h, 6h y 2h (Solo Panel Admin)
               </h2>
               <p className="text-xs text-[#3B82F6] mt-0.5">
-                Las tareas pendientes o en proceso que estén a 24 horas o menos de su fecha límite envían automáticamente un correo exclusivamente a{' '}
+                El sistema despacha correos de forma 100% automática cuando faltan <strong>24 horas</strong>, <strong>12 horas</strong>, <strong>6 horas</strong> y <strong>2 horas</strong> para vencer exclusivamente al correo{' '}
                 <strong className="font-mono text-[#0B2559]">fundacionulep@gmail.com</strong>.
               </p>
             </div>
@@ -2600,39 +2562,44 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             </span>
           </div>
 
-          {resendBannerMsg && (
-            <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-semibold text-[#0B2559] flex items-center justify-between gap-2">
-              <span>{resendBannerMsg}</span>
-              <button
-                type="button"
-                onClick={() => setResendBannerMsg(null)}
-                className="text-slate-400 hover:text-[#0B2559]"
+          {/* Indicadores de los 4 umbrales automáticos */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[24, 12, 6, 2].map(hr => (
+              <div
+                key={hr}
+                className="p-2.5 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] flex items-center justify-between"
               >
-                <i className="fi fi-rr-cross-small text-sm" />
-              </button>
-            </div>
-          )}
+                <span className="text-xs font-bold text-[#0B2559]">Faltando {hr} horas</span>
+                <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold">
+                  Auto
+                </span>
+              </div>
+            ))}
+          </div>
 
           {resendScreen === 'expiring_24h' ? (
             <div className="space-y-2.5">
               {tasksExpiringIn24h.length === 0 ? (
                 <div className="p-6 text-center bg-[#F4F9FF] border border-[#D6EAFF] rounded-xl space-y-1">
                   <div className="text-xs font-bold text-[#0B2559]">
-                    No hay tareas pendientes dentro de la ventana de 24 horas para vencer en este instante.
+                    No hay tareas pendientes dentro de las ventanas de 24h, 12h, 6h o 2h para vencer en este instante.
                   </div>
                   <p className="text-[11px] text-[#3B82F6]">
-                    En cuanto cualquier tarea de la plataforma entre en las últimas 24 horas antes de vencer, se enviará el correo automático a fundacionulep@gmail.com.
+                    En cuanto cualquier tarea de la plataforma alcance las 24h, 12h, 6h o 2h antes de vencer, el sistema enviará automáticamente el correo a fundacionulep@gmail.com.
                   </p>
                 </div>
               ) : (
                 tasksExpiringIn24h.map(t => {
+                  const activeMilestone = getMilestoneHours(t.dueDate) || 24;
                   const responsable =
                     t.assignedToCedula === 'ABIERTA'
                       ? 'Abierta (Cualquiera puede realizarla)'
                       : t.assignedToName || t.assignedToCedula || 'Sin responsable';
                   const fechaTexto = formatReadableDate(t.dueDate);
-                  const previewSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${t.title}" está a 24 horas de vencer.`;
-                  const sentItem = resendHistory.find(h => h.taskId === t.id);
+                  const previewSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${t.title}" está a ${activeMilestone} horas de vencer.`;
+                  const sentItem = resendHistory.find(
+                    h => h.taskId === t.id && (h.milestoneHours === activeMilestone || !h.milestoneHours)
+                  );
 
                   return (
                     <div
@@ -2641,6 +2608,9 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     >
                       <div className="space-y-1.5 min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-[#0B2559] text-white text-[10px] font-mono font-bold">
+                            Umbral {activeMilestone}h
+                          </span>
                           <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-bold tabular-nums">
                             ⏳ {formatRemainingHours(t.dueDate)}
                           </span>
@@ -2648,11 +2618,6 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                           <span className="text-[11px] text-[#3B82F6] font-mono">
                             · Destino: fundacionulep@gmail.com
                           </span>
-                          {sentItem?.status === 'sent' && (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold">
-                              ✓ Correo Enviado
-                            </span>
-                          )}
                         </div>
                         <div className="p-2.5 rounded-lg bg-white border border-[#D6EAFF] text-xs text-[#0B2559] font-medium">
                           {previewSentence}
@@ -2660,19 +2625,14 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          disabled={resendSendingId === t.id}
-                          onClick={() => handleDispatchResend24h([t], t.id)}
-                          className="px-3.5 py-2 rounded-xl text-xs font-bold bg-[#0B2559] text-white hover:bg-[#15397A] disabled:opacity-50 flex items-center gap-1.5 transition-colors"
-                        >
-                          <i className="fi fi-rr-envelope text-xs text-[#B3D9FF]" />
+                        <span className="px-3 py-1.5 rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1.5">
+                          <i className="fi fi-rr-check text-[10px]" />
                           <span>
-                            {resendSendingId === t.id
-                              ? 'Enviando...'
-                              : 'Enviar Correo a fundacionulep@gmail.com'}
+                            {sentItem?.status === 'sent'
+                              ? `Notificación ${activeMilestone}h Enviada Automáticamente`
+                              : `Despacho Automático (${activeMilestone}h)`}
                           </span>
-                        </button>
+                        </span>
                       </div>
                     </div>
                   );
@@ -2683,16 +2643,21 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             <div className="space-y-2">
               {resendHistory.length === 0 ? (
                 <div className="p-6 text-center bg-[#F4F9FF] border border-[#D6EAFF] rounded-xl text-xs text-[#0B2559]">
-                  Aún no se han registrado despachos en esta sesión.
+                  Aún no se han registrado despachos automáticos en esta sesión.
                 </div>
               ) : (
                 resendHistory.map((item, idx) => (
                   <div
-                    key={`${item.taskId}_${idx}`}
+                    key={`${item.recordKey || item.taskId}_${idx}`}
                     className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] space-y-1.5 text-xs"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
+                        {item.milestoneHours && (
+                          <span className="px-2 py-0.5 rounded bg-[#0B2559] text-white text-[10px] font-mono font-bold">
+                            Umbral {item.milestoneHours}h
+                          </span>
+                        )}
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                             item.status === 'sent'
@@ -2700,7 +2665,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                               : 'bg-amber-100 text-amber-900 border border-amber-300'
                           }`}
                         >
-                          {item.status === 'sent' ? 'Enviado por Resend' : 'Registrado'}
+                          {item.status === 'sent' ? 'Enviado Automáticamente por Resend' : 'Registrado Automáticamente'}
                         </span>
                         <strong className="text-[#0B2559]">Para: {item.recipient}</strong>
                       </div>

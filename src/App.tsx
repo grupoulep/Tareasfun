@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   collection,
   onSnapshot,
@@ -240,56 +240,85 @@ export default function App() {
 
   // Sin temporizador de inactividad ni recargas automáticas de presencia para evitar que se borre información al llenar formularios
 
-  // Envío automático en segundo plano vía Resend API (exclusivo a fundacionulep@gmail.com) para tareas a 24 horas de vencer
+  // Envío 100% automático en segundo plano vía Resend API (exclusivo a fundacionulep@gmail.com)
+  // cuando a una tarea le falten 24 horas, 12 horas, 6 horas o 2 horas para vencer
+  const tasksRef = useRef<TaskItem[]>(tasks);
   useEffect(() => {
-    if (!tasks || tasks.length === 0) return;
+    tasksRef.current = tasks;
+  }, [tasks]);
+
+  const evaluateAndSendMilestoneAlerts = (taskList: TaskItem[]) => {
+    if (!taskList || taskList.length === 0) return;
     const nowMs = Date.now();
-    const expiringIn24h = tasks.filter(t => {
-      if (t.status === 'completada' || !t.dueDate) return false;
+
+    const getTaskMilestone = (t: TaskItem): 24 | 12 | 6 | 2 | null => {
+      if (t.status === 'completada' || !t.dueDate) return null;
       const dueMs = new Date(t.dueDate).getTime();
-      if (Number.isNaN(dueMs)) return false;
+      if (Number.isNaN(dueMs)) return null;
       const diffMs = dueMs - nowMs;
-      return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
-    });
+      if (diffMs <= 0) return null;
+      const diffHours = diffMs / (1000 * 60 * 60);
+      if (diffHours <= 2) return 2;
+      if (diffHours <= 6) return 6;
+      if (diffHours <= 12) return 12;
+      if (diffHours <= 24) return 24;
+      return null;
+    };
 
-    if (expiringIn24h.length === 0) return;
-
-    let notifiedIds: Record<string, string> = {};
+    let notifiedMap: Record<string, string> = {};
     try {
-      const raw = localStorage.getItem('ulep_resend_24h_notified_v1');
-      if (raw) notifiedIds = JSON.parse(raw);
+      const raw = localStorage.getItem('ulep_resend_milestones_notified_v1');
+      if (raw) notifiedMap = JSON.parse(raw);
     } catch {
-      notifiedIds = {};
+      notifiedMap = {};
     }
 
-    const unnotified = expiringIn24h.filter(t => !notifiedIds[t.id]);
-    if (unnotified.length === 0) return;
+    const tasksNeedingAlert = taskList.filter(t => {
+      const milestone = getTaskMilestone(t);
+      if (!milestone) return false;
+      const key = `${t.id}_${milestone}h`;
+      return !notifiedMap[key];
+    });
+
+    if (tasksNeedingAlert.length === 0) return;
 
     fetch('/api/resend/check-and-notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tasks: unnotified }),
+      body: JSON.stringify({ tasks: tasksNeedingAlert }),
     })
       .then(r => r.json())
       .then(data => {
         if (Array.isArray(data?.dispatched)) {
-          const updated = { ...notifiedIds };
+          const updated = { ...notifiedMap };
           for (const d of data.dispatched) {
-            if (d?.taskId && d?.status === 'sent') {
-              updated[d.taskId] = d.sentAt || new Date().toISOString();
+            const rKey = d?.recordKey || (d?.taskId && d?.milestoneHours ? `${d.taskId}_${d.milestoneHours}h` : null);
+            if (rKey && d?.status === 'sent') {
+              updated[rKey] = d.sentAt || new Date().toISOString();
             }
           }
           try {
-            localStorage.setItem('ulep_resend_24h_notified_v1', JSON.stringify(updated));
+            localStorage.setItem('ulep_resend_milestones_notified_v1', JSON.stringify(updated));
           } catch {
-            // Ignorar errores de cuota de almacenamiento
+            // Ignorar errores de almacenamiento
           }
         }
       })
       .catch(() => {
         // Silencioso en segundo plano
       });
+  };
+
+  useEffect(() => {
+    evaluateAndSendMilestoneAlerts(tasks);
   }, [tasks]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      evaluateAndSendMilestoneAlerts(tasksRef.current);
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

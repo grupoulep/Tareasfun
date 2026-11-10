@@ -22,14 +22,18 @@ import { SINGLE_ADMIN_CEDULA } from './src/constants.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Destinatario único y exclusivo autorizado para las alertas de tareas a 24 horas de vencer
+// Destinatario único y exclusivo autorizado para las alertas de tareas a 24h, 12h, 6h y 2h de vencer
 const RESEND_EXCLUSIVE_RECIPIENT = 'fundacionulep@gmail.com';
+export type AlertMilestoneHours = 24 | 12 | 6 | 2;
+const ALERT_MILESTONES: AlertMilestoneHours[] = [24, 12, 6, 2];
 
 interface SentEmailRecord {
+  recordKey: string;
   taskId: string;
   taskTitle: string;
   assignedToName: string;
   dueDate: string;
+  milestoneHours: AlertMilestoneHours;
   recipient: string;
   messageText: string;
   sentAt: string;
@@ -38,7 +42,19 @@ interface SentEmailRecord {
   errorDetail?: string;
 }
 
-const sent24hNotificationsMap = new Map<string, SentEmailRecord>();
+const sentNotificationsMap = new Map<string, SentEmailRecord>();
+const cachedTasksMap = new Map<
+  string,
+  {
+    id: string;
+    title: string;
+    assignedToName?: string;
+    assignedToCedula?: string;
+    dueDate: string;
+    priority?: string;
+    status?: string;
+  }
+>();
 
 function formatDateReadable(isoDate: string): string {
   if (!isoDate) return 'Sin fecha';
@@ -53,24 +69,34 @@ function formatDateReadable(isoDate: string): string {
   });
 }
 
-function isTaskExpiringWithin24Hours(dueDateStr: string, status: string): boolean {
-  if (status === 'completada' || !dueDateStr) return false;
+// Determina qué escalón de alerta automática corresponde según el tiempo restante (24h, 12h, 6h o 2h)
+function getActiveMilestoneForTask(dueDateStr: string, status: string): AlertMilestoneHours | null {
+  if (status === 'completada' || !dueDateStr) return null;
   const dueMs = new Date(dueDateStr).getTime();
-  if (Number.isNaN(dueMs)) return false;
+  if (Number.isNaN(dueMs)) return null;
   const diffMs = dueMs - Date.now();
-  // Tareas que están dentro de las próximas 24 horas de vencer (entre 0 y 24 horas)
-  return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+  if (diffMs <= 0) return null;
+  const diffHours = diffMs / (1000 * 60 * 60);
+  if (diffHours <= 2) return 2;
+  if (diffHours <= 6) return 6;
+  if (diffHours <= 12) return 12;
+  if (diffHours <= 24) return 24;
+  return null;
 }
 
-async function dispatchResendEmailForTask(task: {
-  id: string;
-  title: string;
-  assignedToName?: string;
-  assignedToCedula?: string;
-  dueDate: string;
-  priority?: string;
-  status?: string;
-}): Promise<SentEmailRecord> {
+async function dispatchResendEmailForTask(
+  task: {
+    id: string;
+    title: string;
+    assignedToName?: string;
+    assignedToCedula?: string;
+    dueDate: string;
+    priority?: string;
+    status?: string;
+  },
+  milestoneHours: AlertMilestoneHours
+): Promise<SentEmailRecord> {
+  const recordKey = `${task.id}_${milestoneHours}h`;
   const responsable =
     task.assignedToCedula === 'ABIERTA'
       ? 'Abierta (Cualquiera puede realizarla)'
@@ -78,25 +104,27 @@ async function dispatchResendEmailForTask(task: {
   const fechaTexto = formatDateReadable(task.dueDate);
   const tareaNombre = task.title || 'Sin título';
 
-  // Mensaje exacto solicitado por el usuario
-  const notificationSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${tareaNombre}" está a 24 horas de vencer.`;
+  // Mensaje exacto con el umbral correspondiente (24 horas, 12 horas, 6 horas o 2 horas)
+  const notificationSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${tareaNombre}" está a ${milestoneHours} horas de vencer.`;
 
   const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
   const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
 
   if (!resendApiKey) {
     const record: SentEmailRecord = {
+      recordKey,
       taskId: task.id,
       taskTitle: tareaNombre,
       assignedToName: responsable,
       dueDate: task.dueDate,
+      milestoneHours,
       recipient: RESEND_EXCLUSIVE_RECIPIENT,
       messageText: notificationSentence,
       sentAt: new Date().toISOString(),
       status: 'missing_api_key',
       errorDetail: 'Falta configurar RESEND_API_KEY en las variables de entorno del servidor.',
     };
-    sent24hNotificationsMap.set(task.id, record);
+    sentNotificationsMap.set(recordKey, record);
     return record;
   }
 
@@ -110,18 +138,22 @@ async function dispatchResendEmailForTask(task: {
       body: JSON.stringify({
         from: fromEmail,
         to: [RESEND_EXCLUSIVE_RECIPIENT],
-        subject: `⚠️ Alerta 24h ULEP: Tarea "${tareaNombre}" de ${responsable} próxima a vencer`,
+        subject: `⚠️ Alerta ${milestoneHours}h ULEP: Tarea "${tareaNombre}" de ${responsable} a ${milestoneHours} horas de vencer`,
         text: notificationSentence,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
             <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
-              <h2 style="margin: 0; font-size: 16px;">Notificación Automática de Vencimiento (24 Horas) — Fundación ULEP</h2>
+              <h2 style="margin: 0; font-size: 16px;">Notificación Automática de Vencimiento (Faltan ${milestoneHours} Horas) — Fundación ULEP</h2>
             </div>
             <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF;">
               <p style="font-size: 15px; line-height: 1.6; font-weight: bold; background-color: #FFFFFF; padding: 16px; border-radius: 8px; border: 1px solid #B3D9FF; margin-top: 0;">
                 ${notificationSentence}
               </p>
               <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; background: #FFFFFF; border-radius: 8px; overflow: hidden;">
+                <tr>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; color: #3B82F6; font-weight: bold;">Umbral de Alerta Automática:</td>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; font-weight: bold; color: #0B2559;">Faltando ${milestoneHours} horas</td>
+                </tr>
                 <tr>
                   <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; color: #3B82F6; font-weight: bold;">Responsable:</td>
                   <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; font-weight: bold; color: #0B2559;">${responsable}</td>
@@ -149,32 +181,36 @@ async function dispatchResendEmailForTask(task: {
 
     if (!response.ok) {
       const errRecord: SentEmailRecord = {
+        recordKey,
         taskId: task.id,
         taskTitle: tareaNombre,
         assignedToName: responsable,
         dueDate: task.dueDate,
+        milestoneHours,
         recipient: RESEND_EXCLUSIVE_RECIPIENT,
         messageText: notificationSentence,
         sentAt: new Date().toISOString(),
         status: 'error',
         errorDetail: data.message || `Error HTTP ${response.status} desde Resend API`,
       };
-      sent24hNotificationsMap.set(task.id, errRecord);
+      sentNotificationsMap.set(recordKey, errRecord);
       return errRecord;
     }
 
     const okRecord: SentEmailRecord = {
+      recordKey,
       taskId: task.id,
       taskTitle: tareaNombre,
       assignedToName: responsable,
       dueDate: task.dueDate,
+      milestoneHours,
       recipient: RESEND_EXCLUSIVE_RECIPIENT,
       messageText: notificationSentence,
       sentAt: new Date().toISOString(),
       resendId: data.id,
       status: 'sent',
     };
-    sent24hNotificationsMap.set(task.id, okRecord);
+    sentNotificationsMap.set(recordKey, okRecord);
 
     try {
       await insertSqlAuditLog({
@@ -182,12 +218,12 @@ async function dispatchResendEmailForTask(task: {
         actorCedula: SINGLE_ADMIN_CEDULA,
         actorName: 'Sistema Resend Automático',
         actorRole: 'admin',
-        actionType: 'CORREO_RESEND_24H',
-        module: 'RESEND_ALERTAS_24H',
-        description: `Envió correo automático a ${RESEND_EXCLUSIVE_RECIPIENT}: "${notificationSentence}"`,
+        actionType: `CORREO_RESEND_${milestoneHours}H`,
+        module: 'RESEND_ALERTAS_AUTOMATICAS',
+        description: `Envió correo automático (${milestoneHours}h) a ${RESEND_EXCLUSIVE_RECIPIENT}: "${notificationSentence}"`,
         targetId: task.id,
         timestamp: new Date().toISOString(),
-        severity: 'info',
+        severity: milestoneHours <= 6 ? 'warning' : 'info',
       });
     } catch {
       // Continuar aunque la base SQL no esté activa en este instante
@@ -196,17 +232,19 @@ async function dispatchResendEmailForTask(task: {
     return okRecord;
   } catch (err: unknown) {
     const failRecord: SentEmailRecord = {
+      recordKey,
       taskId: task.id,
       taskTitle: tareaNombre,
       assignedToName: responsable,
       dueDate: task.dueDate,
+      milestoneHours,
       recipient: RESEND_EXCLUSIVE_RECIPIENT,
       messageText: notificationSentence,
       sentAt: new Date().toISOString(),
       status: 'error',
       errorDetail: err instanceof Error ? err.message : 'Error de red conectando con Resend',
     };
-    sent24hNotificationsMap.set(task.id, failRecord);
+    sentNotificationsMap.set(recordKey, failRecord);
     return failRecord;
   }
 }
@@ -218,15 +256,16 @@ async function startServer() {
   app.use(express.json());
 
   // ============================================================================
-  // RUTAS DE CONEXIÓN CON LA API DE RESEND (EXCLUSIVO PARA PANEL ADMIN)
+  // RUTAS DE CONEXIÓN CON LA API DE RESEND (24h, 12h, 6h y 2h — EXCLUSIVO ADMIN)
   // ============================================================================
   app.get('/api/resend/status', (_req, res) => {
     const apiKeyConfigured = Boolean((process.env.RESEND_API_KEY || '').trim());
     res.json({
       connected: apiKeyConfigured,
       exclusiveRecipient: RESEND_EXCLUSIVE_RECIPIENT,
+      milestonesHours: ALERT_MILESTONES,
       fromEmail: (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim(),
-      sentHistory: Array.from(sent24hNotificationsMap.values()).sort(
+      sentHistory: Array.from(sentNotificationsMap.values()).sort(
         (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
       ),
     });
@@ -236,13 +275,35 @@ async function startServer() {
     try {
       const incomingTasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
       const forceTaskId = req.body?.forceTaskId ? String(req.body.forceTaskId) : null;
+      const forceMilestoneRaw = Number(req.body?.forceMilestoneHours);
+      const forcedMilestone: AlertMilestoneHours | null =
+        forceMilestoneRaw === 24 ||
+        forceMilestoneRaw === 12 ||
+        forceMilestoneRaw === 6 ||
+        forceMilestoneRaw === 2
+          ? (forceMilestoneRaw as AlertMilestoneHours)
+          : null;
+
+      for (const item of incomingTasks) {
+        if (item && item.id) {
+          cachedTasksMap.set(String(item.id), {
+            id: String(item.id),
+            title: String(item.title || 'Sin título'),
+            assignedToName: String(item.assignedToName || ''),
+            assignedToCedula: String(item.assignedToCedula || ''),
+            dueDate: String(item.dueDate || ''),
+            priority: String(item.priority || 'media'),
+            status: String(item.status || 'pendiente'),
+          });
+        }
+      }
 
       let tasksToEvaluate = incomingTasks;
       if (tasksToEvaluate.length === 0) {
         try {
           tasksToEvaluate = await getSqlTasks();
         } catch {
-          tasksToEvaluate = [];
+          tasksToEvaluate = Array.from(cachedTasksMap.values());
         }
       }
 
@@ -250,33 +311,40 @@ async function startServer() {
 
       for (const t of tasksToEvaluate) {
         if (!t || !t.id) continue;
-        const isForced = forceTaskId && t.id === forceTaskId;
-        const isExpiring24h = isTaskExpiringWithin24Hours(String(t.dueDate || ''), String(t.status || ''));
+        const isForced = Boolean(forceTaskId && String(t.id) === forceTaskId);
+        const activeMilestone = isForced
+          ? forcedMilestone || getActiveMilestoneForTask(String(t.dueDate || ''), String(t.status || '')) || 24
+          : getActiveMilestoneForTask(String(t.dueDate || ''), String(t.status || ''));
 
-        if (!isForced && !isExpiring24h) continue;
+        if (!activeMilestone) continue;
 
-        const existingRecord = sent24hNotificationsMap.get(String(t.id));
+        const recordKey = `${t.id}_${activeMilestone}h`;
+        const existingRecord = sentNotificationsMap.get(recordKey);
         if (!isForced && existingRecord && existingRecord.status === 'sent') {
           continue;
         }
 
-        const result = await dispatchResendEmailForTask({
-          id: String(t.id),
-          title: String(t.title || 'Sin título'),
-          assignedToName: String(t.assignedToName || ''),
-          assignedToCedula: String(t.assignedToCedula || ''),
-          dueDate: String(t.dueDate || ''),
-          priority: String(t.priority || 'media'),
-          status: String(t.status || 'pendiente'),
-        });
+        const result = await dispatchResendEmailForTask(
+          {
+            id: String(t.id),
+            title: String(t.title || 'Sin título'),
+            assignedToName: String(t.assignedToName || ''),
+            assignedToCedula: String(t.assignedToCedula || ''),
+            dueDate: String(t.dueDate || ''),
+            priority: String(t.priority || 'media'),
+            status: String(t.status || 'pendiente'),
+          },
+          activeMilestone
+        );
         dispatched.push(result);
       }
 
       res.json({
         connected: Boolean((process.env.RESEND_API_KEY || '').trim()),
         exclusiveRecipient: RESEND_EXCLUSIVE_RECIPIENT,
+        milestonesHours: ALERT_MILESTONES,
         dispatched,
-        sentHistory: Array.from(sent24hNotificationsMap.values()).sort(
+        sentHistory: Array.from(sentNotificationsMap.values()).sort(
           (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
         ),
       });
@@ -287,22 +355,33 @@ async function startServer() {
     }
   });
 
-  // Verificación automática en servidor cada 10 minutos para tareas en Cloud SQL a 24 horas de vencer
+  // Verificación automática continua en el servidor cada 60 segundos para los umbrales de 24h, 12h, 6h y 2h
   setInterval(async () => {
     try {
-      const sqlTasks = await getSqlTasks();
-      for (const t of sqlTasks) {
-        if (isTaskExpiringWithin24Hours(t.dueDate, t.status)) {
-          const prev = sent24hNotificationsMap.get(t.id);
+      const combined = new Map(cachedTasksMap);
+      try {
+        const sqlTasks = await getSqlTasks();
+        for (const st of sqlTasks) {
+          combined.set(st.id, st);
+        }
+      } catch {
+        // Usar tareas en caché si Cloud SQL no responde
+      }
+
+      for (const t of combined.values()) {
+        const milestone = getActiveMilestoneForTask(t.dueDate, t.status || 'pendiente');
+        if (milestone) {
+          const key = `${t.id}_${milestone}h`;
+          const prev = sentNotificationsMap.get(key);
           if (!prev || prev.status !== 'sent') {
-            await dispatchResendEmailForTask(t);
+            await dispatchResendEmailForTask(t, milestone);
           }
         }
       }
     } catch {
       // Silencioso en background
     }
-  }, 10 * 60 * 1000);
+  }, 60 * 1000);
 
   // Rutas de API protegidas con Firebase Auth para Cloud SQL (PostgreSQL)
   app.post('/api/auth/sync', requireAuth, async (req: AuthRequest, res) => {
@@ -443,11 +522,15 @@ async function startServer() {
         category: String(b.category || 'Chequeo'),
       });
 
-      // Si la tarea guardada está a 24 horas de vencer, dispara automáticamente el correo Resend a fundacionulep@gmail.com
-      if (isTaskExpiringWithin24Hours(saved.dueDate, saved.status)) {
-        const existing = sent24hNotificationsMap.get(saved.id);
+      cachedTasksMap.set(saved.id, saved);
+
+      // Si la tarea guardada está dentro de los umbrales de 24h, 12h, 6h o 2h, dispara automáticamente el correo Resend a fundacionulep@gmail.com
+      const milestone = getActiveMilestoneForTask(saved.dueDate, saved.status);
+      if (milestone) {
+        const key = `${saved.id}_${milestone}h`;
+        const existing = sentNotificationsMap.get(key);
         if (!existing || existing.status !== 'sent') {
-          void dispatchResendEmailForTask(saved);
+          void dispatchResendEmailForTask(saved, milestone);
         }
       }
 
