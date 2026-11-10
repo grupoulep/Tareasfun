@@ -30,6 +30,7 @@ type NavSection =
   | 'admin_records'
   | 'admin_audit'
   | 'admin_backup'
+  | 'admin_resend'
   | 'user_personal'
   | 'user_all_tasks'
   | 'user_priority_alerts'
@@ -238,6 +239,57 @@ export default function App() {
   }, [currentUser?.cedula, currentUser?.role]);
 
   // Sin temporizador de inactividad ni recargas automáticas de presencia para evitar que se borre información al llenar formularios
+
+  // Envío automático en segundo plano vía Resend API (exclusivo a fundacionulep@gmail.com) para tareas a 24 horas de vencer
+  useEffect(() => {
+    if (!tasks || tasks.length === 0) return;
+    const nowMs = Date.now();
+    const expiringIn24h = tasks.filter(t => {
+      if (t.status === 'completada' || !t.dueDate) return false;
+      const dueMs = new Date(t.dueDate).getTime();
+      if (Number.isNaN(dueMs)) return false;
+      const diffMs = dueMs - nowMs;
+      return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+    });
+
+    if (expiringIn24h.length === 0) return;
+
+    let notifiedIds: Record<string, string> = {};
+    try {
+      const raw = localStorage.getItem('ulep_resend_24h_notified_v1');
+      if (raw) notifiedIds = JSON.parse(raw);
+    } catch {
+      notifiedIds = {};
+    }
+
+    const unnotified = expiringIn24h.filter(t => !notifiedIds[t.id]);
+    if (unnotified.length === 0) return;
+
+    fetch('/api/resend/check-and-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks: unnotified }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data?.dispatched)) {
+          const updated = { ...notifiedIds };
+          for (const d of data.dispatched) {
+            if (d?.taskId && d?.status === 'sent') {
+              updated[d.taskId] = d.sentAt || new Date().toISOString();
+            }
+          }
+          try {
+            localStorage.setItem('ulep_resend_24h_notified_v1', JSON.stringify(updated));
+          } catch {
+            // Ignorar errores de cuota de almacenamiento
+          }
+        }
+      })
+      .catch(() => {
+        // Silencioso en segundo plano
+      });
+  }, [tasks]);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1135,6 +1187,14 @@ export default function App() {
 
   const pendingApprovalsCount = users.filter(u => u.approvalStatus === 'pendiente').length;
 
+  const expiring24hCount = tasks.filter(t => {
+    if (t.status === 'completada' || !t.dueDate) return false;
+    const dueMs = new Date(t.dueDate).getTime();
+    if (Number.isNaN(dueMs)) return false;
+    const diffMs = dueMs - Date.now();
+    return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+  }).length;
+
   // NAVEGACIÓN PRINCIPAL CON PALETA ULEP (#B3D9FF + BLANCO + #0B2559)
   const adminNavItems: {
     id: NavSection;
@@ -1170,7 +1230,13 @@ export default function App() {
       id: 'admin_backup',
       label: '5. Respaldos de Base de Datos',
       iconClass: 'fi fi-rr-database',
-    }
+    },
+    {
+      id: 'admin_resend',
+      label: '6. Correos Resend (24h)',
+      iconClass: 'fi fi-rr-envelope',
+      badge: expiring24hCount,
+    },
   ];
 
   const urgentTasksCount = tasks.filter(
@@ -1439,6 +1505,7 @@ export default function App() {
                   | 'admin_records'
                   | 'admin_audit'
                   | 'admin_backup'
+                  | 'admin_resend'
               }
               currentUser={currentUser}
               users={users}
@@ -1490,13 +1557,14 @@ export default function App() {
         {isMobileView && (
           <nav className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#B3D9FF] px-2 py-1.5 shadow-lg">
             {activePanelMode === 'admin' && currentUser.role === 'admin' ? (
-              <div className="grid grid-cols-5 gap-1 max-w-lg mx-auto">
+              <div className="grid grid-cols-6 gap-1 max-w-lg mx-auto">
                 {([
                   { id: 'admin_users', shortLabel: 'Usuarios', icon: 'fi-rr-users-alt', badge: users.filter(u => !u.approvalStatus || u.approvalStatus === 'aprobado').length },
                   { id: 'admin_approvals', shortLabel: 'Autorizar', icon: 'fi-rr-user-check', badge: pendingApprovalsCount },
                   { id: 'admin_records', shortLabel: 'Tareas', icon: 'fi-rr-folder-open', badge: tasks.length },
                   { id: 'admin_audit', shortLabel: 'Auditoría', icon: 'fi-rr-shield-check', badge: undefined },
                   { id: 'admin_backup', shortLabel: 'Respaldos', icon: 'fi-rr-database', badge: undefined },
+                  { id: 'admin_resend', shortLabel: 'Resend 24h', icon: 'fi-rr-envelope', badge: expiring24hCount },
                 ] as const).map(tab => {
                   const isActive = activeSection === tab.id;
                   return (

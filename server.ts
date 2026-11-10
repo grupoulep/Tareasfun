@@ -22,11 +22,287 @@ import { SINGLE_ADMIN_CEDULA } from './src/constants.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Destinatario único y exclusivo autorizado para las alertas de tareas a 24 horas de vencer
+const RESEND_EXCLUSIVE_RECIPIENT = 'fundacionulep@gmail.com';
+
+interface SentEmailRecord {
+  taskId: string;
+  taskTitle: string;
+  assignedToName: string;
+  dueDate: string;
+  recipient: string;
+  messageText: string;
+  sentAt: string;
+  resendId?: string;
+  status: 'sent' | 'missing_api_key' | 'error';
+  errorDetail?: string;
+}
+
+const sent24hNotificationsMap = new Map<string, SentEmailRecord>();
+
+function formatDateReadable(isoDate: string): string {
+  if (!isoDate) return 'Sin fecha';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return isoDate;
+  return d.toLocaleString('es-CO', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function isTaskExpiringWithin24Hours(dueDateStr: string, status: string): boolean {
+  if (status === 'completada' || !dueDateStr) return false;
+  const dueMs = new Date(dueDateStr).getTime();
+  if (Number.isNaN(dueMs)) return false;
+  const diffMs = dueMs - Date.now();
+  // Tareas que están dentro de las próximas 24 horas de vencer (entre 0 y 24 horas)
+  return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+}
+
+async function dispatchResendEmailForTask(task: {
+  id: string;
+  title: string;
+  assignedToName?: string;
+  assignedToCedula?: string;
+  dueDate: string;
+  priority?: string;
+  status?: string;
+}): Promise<SentEmailRecord> {
+  const responsable =
+    task.assignedToCedula === 'ABIERTA'
+      ? 'Abierta (Cualquiera puede realizarla)'
+      : task.assignedToName || task.assignedToCedula || 'Sin responsable asignado';
+  const fechaTexto = formatDateReadable(task.dueDate);
+  const tareaNombre = task.title || 'Sin título';
+
+  // Mensaje exacto solicitado por el usuario
+  const notificationSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${tareaNombre}" está a 24 horas de vencer.`;
+
+  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+  const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
+
+  if (!resendApiKey) {
+    const record: SentEmailRecord = {
+      taskId: task.id,
+      taskTitle: tareaNombre,
+      assignedToName: responsable,
+      dueDate: task.dueDate,
+      recipient: RESEND_EXCLUSIVE_RECIPIENT,
+      messageText: notificationSentence,
+      sentAt: new Date().toISOString(),
+      status: 'missing_api_key',
+      errorDetail: 'Falta configurar RESEND_API_KEY en las variables de entorno del servidor.',
+    };
+    sent24hNotificationsMap.set(task.id, record);
+    return record;
+  }
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [RESEND_EXCLUSIVE_RECIPIENT],
+        subject: `⚠️ Alerta 24h ULEP: Tarea "${tareaNombre}" de ${responsable} próxima a vencer`,
+        text: notificationSentence,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+            <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+              <h2 style="margin: 0; font-size: 16px;">Notificación Automática de Vencimiento (24 Horas) — Fundación ULEP</h2>
+            </div>
+            <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF;">
+              <p style="font-size: 15px; line-height: 1.6; font-weight: bold; background-color: #FFFFFF; padding: 16px; border-radius: 8px; border: 1px solid #B3D9FF; margin-top: 0;">
+                ${notificationSentence}
+              </p>
+              <table style="width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; background: #FFFFFF; border-radius: 8px; overflow: hidden;">
+                <tr>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; color: #3B82F6; font-weight: bold;">Responsable:</td>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; font-weight: bold; color: #0B2559;">${responsable}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; color: #3B82F6; font-weight: bold;">Fecha de vencimiento:</td>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; font-weight: bold; color: #0B2559;">${fechaTexto}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; color: #3B82F6; font-weight: bold;">Tarea:</td>
+                  <td style="padding: 10px 14px; border-bottom: 1px solid #EAF3FF; font-weight: bold; color: #0B2559;">${tareaNombre}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 10px 14px; color: #3B82F6; font-weight: bold;">Destino exclusivo:</td>
+                  <td style="padding: 10px 14px; font-weight: bold; color: #0B2559;">${RESEND_EXCLUSIVE_RECIPIENT}</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+        `,
+      }),
+    });
+
+    const data = (await response.json().catch(() => ({}))) as { id?: string; message?: string };
+
+    if (!response.ok) {
+      const errRecord: SentEmailRecord = {
+        taskId: task.id,
+        taskTitle: tareaNombre,
+        assignedToName: responsable,
+        dueDate: task.dueDate,
+        recipient: RESEND_EXCLUSIVE_RECIPIENT,
+        messageText: notificationSentence,
+        sentAt: new Date().toISOString(),
+        status: 'error',
+        errorDetail: data.message || `Error HTTP ${response.status} desde Resend API`,
+      };
+      sent24hNotificationsMap.set(task.id, errRecord);
+      return errRecord;
+    }
+
+    const okRecord: SentEmailRecord = {
+      taskId: task.id,
+      taskTitle: tareaNombre,
+      assignedToName: responsable,
+      dueDate: task.dueDate,
+      recipient: RESEND_EXCLUSIVE_RECIPIENT,
+      messageText: notificationSentence,
+      sentAt: new Date().toISOString(),
+      resendId: data.id,
+      status: 'sent',
+    };
+    sent24hNotificationsMap.set(task.id, okRecord);
+
+    try {
+      await insertSqlAuditLog({
+        id: `log_resend_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        actorCedula: SINGLE_ADMIN_CEDULA,
+        actorName: 'Sistema Resend Automático',
+        actorRole: 'admin',
+        actionType: 'CORREO_RESEND_24H',
+        module: 'RESEND_ALERTAS_24H',
+        description: `Envió correo automático a ${RESEND_EXCLUSIVE_RECIPIENT}: "${notificationSentence}"`,
+        targetId: task.id,
+        timestamp: new Date().toISOString(),
+        severity: 'info',
+      });
+    } catch {
+      // Continuar aunque la base SQL no esté activa en este instante
+    }
+
+    return okRecord;
+  } catch (err: unknown) {
+    const failRecord: SentEmailRecord = {
+      taskId: task.id,
+      taskTitle: tareaNombre,
+      assignedToName: responsable,
+      dueDate: task.dueDate,
+      recipient: RESEND_EXCLUSIVE_RECIPIENT,
+      messageText: notificationSentence,
+      sentAt: new Date().toISOString(),
+      status: 'error',
+      errorDetail: err instanceof Error ? err.message : 'Error de red conectando con Resend',
+    };
+    sent24hNotificationsMap.set(task.id, failRecord);
+    return failRecord;
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
+
+  // ============================================================================
+  // RUTAS DE CONEXIÓN CON LA API DE RESEND (EXCLUSIVO PARA PANEL ADMIN)
+  // ============================================================================
+  app.get('/api/resend/status', (_req, res) => {
+    const apiKeyConfigured = Boolean((process.env.RESEND_API_KEY || '').trim());
+    res.json({
+      connected: apiKeyConfigured,
+      exclusiveRecipient: RESEND_EXCLUSIVE_RECIPIENT,
+      fromEmail: (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim(),
+      sentHistory: Array.from(sent24hNotificationsMap.values()).sort(
+        (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
+      ),
+    });
+  });
+
+  app.post('/api/resend/check-and-notify', async (req, res) => {
+    try {
+      const incomingTasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+      const forceTaskId = req.body?.forceTaskId ? String(req.body.forceTaskId) : null;
+
+      let tasksToEvaluate = incomingTasks;
+      if (tasksToEvaluate.length === 0) {
+        try {
+          tasksToEvaluate = await getSqlTasks();
+        } catch {
+          tasksToEvaluate = [];
+        }
+      }
+
+      const dispatched: SentEmailRecord[] = [];
+
+      for (const t of tasksToEvaluate) {
+        if (!t || !t.id) continue;
+        const isForced = forceTaskId && t.id === forceTaskId;
+        const isExpiring24h = isTaskExpiringWithin24Hours(String(t.dueDate || ''), String(t.status || ''));
+
+        if (!isForced && !isExpiring24h) continue;
+
+        const existingRecord = sent24hNotificationsMap.get(String(t.id));
+        if (!isForced && existingRecord && existingRecord.status === 'sent') {
+          continue;
+        }
+
+        const result = await dispatchResendEmailForTask({
+          id: String(t.id),
+          title: String(t.title || 'Sin título'),
+          assignedToName: String(t.assignedToName || ''),
+          assignedToCedula: String(t.assignedToCedula || ''),
+          dueDate: String(t.dueDate || ''),
+          priority: String(t.priority || 'media'),
+          status: String(t.status || 'pendiente'),
+        });
+        dispatched.push(result);
+      }
+
+      res.json({
+        connected: Boolean((process.env.RESEND_API_KEY || '').trim()),
+        exclusiveRecipient: RESEND_EXCLUSIVE_RECIPIENT,
+        dispatched,
+        sentHistory: Array.from(sent24hNotificationsMap.values()).sort(
+          (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
+        ),
+      });
+    } catch (error: unknown) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Error al procesar notificaciones Resend',
+      });
+    }
+  });
+
+  // Verificación automática en servidor cada 10 minutos para tareas en Cloud SQL a 24 horas de vencer
+  setInterval(async () => {
+    try {
+      const sqlTasks = await getSqlTasks();
+      for (const t of sqlTasks) {
+        if (isTaskExpiringWithin24Hours(t.dueDate, t.status)) {
+          const prev = sent24hNotificationsMap.get(t.id);
+          if (!prev || prev.status !== 'sent') {
+            await dispatchResendEmailForTask(t);
+          }
+        }
+      }
+    } catch {
+      // Silencioso en background
+    }
+  }, 10 * 60 * 1000);
 
   // Rutas de API protegidas con Firebase Auth para Cloud SQL (PostgreSQL)
   app.post('/api/auth/sync', requireAuth, async (req: AuthRequest, res) => {
@@ -166,6 +442,15 @@ async function startServer() {
         directLink: String(b.directLink || ''),
         category: String(b.category || 'Chequeo'),
       });
+
+      // Si la tarea guardada está a 24 horas de vencer, dispara automáticamente el correo Resend a fundacionulep@gmail.com
+      if (isTaskExpiringWithin24Hours(saved.dueDate, saved.status)) {
+        const existing = sent24hNotificationsMap.get(saved.id);
+        if (!existing || existing.status !== 'sent') {
+          void dispatchResendEmailForTask(saved);
+        }
+      }
+
       res.json(saved);
     } catch (error: unknown) {
       console.error('Failed to save task:', error);

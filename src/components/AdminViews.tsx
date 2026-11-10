@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from '../types';
 import {
   saveUserToFirestore,
@@ -40,7 +40,8 @@ interface AdminViewsProps {
     | 'admin_approvals'
     | 'admin_records'
     | 'admin_audit'
-    | 'admin_backup';
+    | 'admin_backup'
+    | 'admin_resend';
   currentUser: AppUser;
   users: AppUser[];
   tasks: TaskItem[];
@@ -52,10 +53,24 @@ interface AdminViewsProps {
   deviceMode?: 'mobile' | 'tablet' | 'pc';
 }
 
+interface ResendSentRecord {
+  taskId: string;
+  taskTitle: string;
+  assignedToName: string;
+  dueDate: string;
+  recipient: string;
+  messageText: string;
+  sentAt: string;
+  resendId?: string;
+  status: 'sent' | 'missing_api_key' | 'error';
+  errorDetail?: string;
+}
+
 type AdminUsersScreen = 'directory' | 'create' | 'permissions' | 'security';
 type CreateUserStepScreen = 'personal' | 'residence' | 'family' | 'bank';
 type FichaSubScreen = 'personal' | 'residence' | 'family' | 'bank' | 'all';
 type BackupScreen = 'export' | 'import' | 'template';
+type ResendScreen = 'expiring_24h' | 'history';
 
 export const AdminViews: React.FC<AdminViewsProps> = ({
   activeSection,
@@ -145,6 +160,68 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Estados exclusivos del Panel Admin para el módulo de correos automáticos Resend (24h)
+  const [resendScreen, setResendScreen] = useState<ResendScreen>('expiring_24h');
+  const [resendHistory, setResendHistory] = useState<ResendSentRecord[]>([]);
+  const [resendSendingId, setResendSendingId] = useState<string | null>(null);
+  const [resendBannerMsg, setResendBannerMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeSection !== 'admin_resend') return;
+    fetch('/api/resend/status')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data?.sentHistory)) {
+          setResendHistory(data.sentHistory);
+        }
+      })
+      .catch(() => {
+        // Silencioso
+      });
+  }, [activeSection, tasks]);
+
+  const handleDispatchResend24h = async (targetTasks: TaskItem[], forceTaskId?: string) => {
+    setResendSendingId(forceTaskId || 'ALL');
+    setResendBannerMsg(null);
+    try {
+      const response = await fetch('/api/resend/check-and-notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tasks: targetTasks,
+          forceTaskId: forceTaskId || null,
+        }),
+      });
+      const data = await response.json();
+      if (Array.isArray(data?.sentHistory)) {
+        setResendHistory(data.sentHistory);
+      }
+      const dispatchedList: ResendSentRecord[] = Array.isArray(data?.dispatched) ? data.dispatched : [];
+      const sentCount = dispatchedList.filter(d => d.status === 'sent').length;
+      const missingKey = dispatchedList.some(d => d.status === 'missing_api_key');
+
+      if (sentCount > 0) {
+        setResendBannerMsg(
+          `Se envió correctamente ${sentCount} notificación(es) automática(s) al correo exclusivo fundacionulep@gmail.com.`
+        );
+      } else if (missingKey) {
+        setResendBannerMsg(
+          'Notificación registrada para fundacionulep@gmail.com (Configura RESEND_API_KEY en el entorno del servidor para el despacho SMTP/HTTP en vivo).'
+        );
+      } else if (dispatchedList.length > 0 && dispatchedList[0].errorDetail) {
+        setResendBannerMsg(`Aviso Resend: ${dispatchedList[0].errorDetail}`);
+      } else {
+        setResendBannerMsg(
+          'Verificación completada: Las tareas a 24 horas de vencer ya fueron notificadas a fundacionulep@gmail.com.'
+        );
+      }
+    } catch {
+      setResendBannerMsg('No se pudo contactar con el servicio de correo Resend en este momento.');
+    } finally {
+      setResendSendingId(null);
+    }
+  };
 
   const toggleUserExpand = (id: string) => {
     setExpandedUserIds(prev => ({ ...prev, [id]: !prev[id] }));
@@ -2420,6 +2497,225 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               );
             })}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // 6. SECCIÓN EXCLUSIVA PANEL ADMIN: CORREOS AUTOMÁTICOS RESEND (24 HORAS)
+  // ============================================================================
+  if (activeSection === 'admin_resend') {
+    const nowMs = Date.now();
+    const tasksExpiringIn24h = tasks.filter(t => {
+      if (t.status === 'completada' || !t.dueDate) return false;
+      const dueMs = new Date(t.dueDate).getTime();
+      if (Number.isNaN(dueMs)) return false;
+      const diffMs = dueMs - nowMs;
+      return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+    });
+
+    const formatReadableDate = (iso: string) => {
+      if (!iso) return 'Sin fecha';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return d.toLocaleString('es-CO', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    };
+
+    const formatRemainingHours = (iso: string) => {
+      const diffMs = new Date(iso).getTime() - nowMs;
+      if (diffMs <= 0) return 'Vencida';
+      const hours = Math.floor(diffMs / (1000 * 60 * 60));
+      const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      return `${hours}h ${mins}m restantes`;
+    };
+
+    return (
+      <div className="space-y-3.5">
+        {/* Selector de Pantallas del Módulo Resend (Exclusivo Panel Admin) */}
+        <div className="bg-white border border-[#B3D9FF] rounded-xl p-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setResendScreen('expiring_24h')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors ${
+                resendScreen === 'expiring_24h'
+                  ? 'bg-[#0B2559] text-white shadow-2xs'
+                  : 'bg-[#F4F9FF] text-[#0B2559] border border-[#D6EAFF] hover:bg-[#EAF3FF]'
+              }`}
+            >
+              <i className="fi fi-rr-envelope text-xs" />
+              <span>Pantalla 1: Tareas a 24 Horas de Vencer ({tasksExpiringIn24h.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setResendScreen('history')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors ${
+                resendScreen === 'history'
+                  ? 'bg-[#0B2559] text-white shadow-2xs'
+                  : 'bg-[#F4F9FF] text-[#0B2559] border border-[#D6EAFF] hover:bg-[#EAF3FF]'
+              }`}
+            >
+              <i className="fi fi-rr-time-past text-xs" />
+              <span>Pantalla 2: Historial de Correos Enviados ({resendHistory.length})</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            disabled={resendSendingId !== null || tasksExpiringIn24h.length === 0}
+            onClick={() => handleDispatchResend24h(tasksExpiringIn24h)}
+            className="px-4 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] disabled:opacity-50 rounded-xl flex items-center gap-2 transition-colors shadow-2xs"
+          >
+            <i className="fi fi-rr-paper-plane text-xs text-[#B3D9FF]" />
+            <span>
+              {resendSendingId === 'ALL'
+                ? 'Enviando por Resend...'
+                : 'Ejecutar Envío Automático 24h Ahora'}
+            </span>
+          </button>
+        </div>
+
+        {/* Cabecera informativa del servicio automático Resend */}
+        <div className="bg-white border border-[#B3D9FF] rounded-xl p-4 sm:p-5 shadow-2xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#D6EAFF]">
+            <div>
+              <h2 className="text-sm font-bold text-[#0B2559] flex items-center gap-2">
+                <i className="fi fi-rr-envelope text-sm text-[#3B82F6]" />
+                Conexión Automática Resend — Alertas de Tareas a 24 Horas de Vencer (Solo Panel Admin)
+              </h2>
+              <p className="text-xs text-[#3B82F6] mt-0.5">
+                Las tareas pendientes o en proceso que estén a 24 horas o menos de su fecha límite envían automáticamente un correo exclusivamente a{' '}
+                <strong className="font-mono text-[#0B2559]">fundacionulep@gmail.com</strong>.
+              </p>
+            </div>
+            <span className="px-3 py-1.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-mono font-bold text-[#0B2559] shrink-0">
+              Destino único: fundacionulep@gmail.com
+            </span>
+          </div>
+
+          {resendBannerMsg && (
+            <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-semibold text-[#0B2559] flex items-center justify-between gap-2">
+              <span>{resendBannerMsg}</span>
+              <button
+                type="button"
+                onClick={() => setResendBannerMsg(null)}
+                className="text-slate-400 hover:text-[#0B2559]"
+              >
+                <i className="fi fi-rr-cross-small text-sm" />
+              </button>
+            </div>
+          )}
+
+          {resendScreen === 'expiring_24h' ? (
+            <div className="space-y-2.5">
+              {tasksExpiringIn24h.length === 0 ? (
+                <div className="p-6 text-center bg-[#F4F9FF] border border-[#D6EAFF] rounded-xl space-y-1">
+                  <div className="text-xs font-bold text-[#0B2559]">
+                    No hay tareas pendientes dentro de la ventana de 24 horas para vencer en este instante.
+                  </div>
+                  <p className="text-[11px] text-[#3B82F6]">
+                    En cuanto cualquier tarea de la plataforma entre en las últimas 24 horas antes de vencer, se enviará el correo automático a fundacionulep@gmail.com.
+                  </p>
+                </div>
+              ) : (
+                tasksExpiringIn24h.map(t => {
+                  const responsable =
+                    t.assignedToCedula === 'ABIERTA'
+                      ? 'Abierta (Cualquiera puede realizarla)'
+                      : t.assignedToName || t.assignedToCedula || 'Sin responsable';
+                  const fechaTexto = formatReadableDate(t.dueDate);
+                  const previewSentence = `La tarea del responsable ${responsable} de la fecha ${fechaTexto} con la tarea "${t.title}" está a 24 horas de vencer.`;
+                  const sentItem = resendHistory.find(h => h.taskId === t.id);
+
+                  return (
+                    <div
+                      key={t.id}
+                      className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1.5 min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-bold tabular-nums">
+                            ⏳ {formatRemainingHours(t.dueDate)}
+                          </span>
+                          <span className="text-xs font-bold text-[#0B2559]">{t.title}</span>
+                          <span className="text-[11px] text-[#3B82F6] font-mono">
+                            · Destino: fundacionulep@gmail.com
+                          </span>
+                          {sentItem?.status === 'sent' && (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold">
+                              ✓ Correo Enviado
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-white border border-[#D6EAFF] text-xs text-[#0B2559] font-medium">
+                          {previewSentence}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          disabled={resendSendingId === t.id}
+                          onClick={() => handleDispatchResend24h([t], t.id)}
+                          className="px-3.5 py-2 rounded-xl text-xs font-bold bg-[#0B2559] text-white hover:bg-[#15397A] disabled:opacity-50 flex items-center gap-1.5 transition-colors"
+                        >
+                          <i className="fi fi-rr-envelope text-xs text-[#B3D9FF]" />
+                          <span>
+                            {resendSendingId === t.id
+                              ? 'Enviando...'
+                              : 'Enviar Correo a fundacionulep@gmail.com'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {resendHistory.length === 0 ? (
+                <div className="p-6 text-center bg-[#F4F9FF] border border-[#D6EAFF] rounded-xl text-xs text-[#0B2559]">
+                  Aún no se han registrado despachos en esta sesión.
+                </div>
+              ) : (
+                resendHistory.map((item, idx) => (
+                  <div
+                    key={`${item.taskId}_${idx}`}
+                    className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] space-y-1.5 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            item.status === 'sent'
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : 'bg-amber-100 text-amber-900 border border-amber-300'
+                          }`}
+                        >
+                          {item.status === 'sent' ? 'Enviado por Resend' : 'Registrado'}
+                        </span>
+                        <strong className="text-[#0B2559]">Para: {item.recipient}</strong>
+                      </div>
+                      <span className="font-mono text-[11px] text-[#3B82F6] tabular-nums">
+                        {formatReadableDate(item.sentAt)}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-white border border-[#B3D9FF] text-[#0B2559] font-medium">
+                      {item.messageText}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
       </div>
     );

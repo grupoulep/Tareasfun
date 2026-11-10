@@ -75,6 +75,74 @@ const SECTIONS: PrioritySection[] = [
   },
 ];
 
+interface CircularProgressRingProps {
+  percentage: number;
+  size?: number;
+  strokeWidth?: number;
+  colorClass?: string;
+  trackClass?: string;
+  labelSizeClass?: string;
+  labelColorClass?: string;
+  sublabel?: string;
+}
+
+const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
+  percentage,
+  size = 68,
+  strokeWidth = 6,
+  colorClass = 'text-[#0B2559]',
+  trackClass = 'text-[#D6EAFF]',
+  labelSizeClass = 'text-xs',
+  labelColorClass = 'text-[#0B2559]',
+  sublabel,
+}) => {
+  const safePct = Math.max(0, Math.min(100, Math.round(percentage)));
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (safePct / 100) * circumference;
+
+  return (
+    <div
+      className="relative inline-flex items-center justify-center shrink-0"
+      style={{ width: size, height: size }}
+    >
+      <svg className="w-full h-full -rotate-90" viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          className={trackClass}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          className={`${colorClass} transition-all duration-500 ease-out`}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center leading-none">
+        <span className={`font-mono font-bold tabular-nums ${labelColorClass} ${labelSizeClass}`}>
+          {safePct}%
+        </span>
+        {sublabel && (
+          <span className="text-[9px] font-semibold text-[#3B82F6] mt-0.5 tabular-nums">
+            {sublabel}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const UserViews: React.FC<UserViewsProps> = ({
   currentUser,
   users = [],
@@ -131,18 +199,36 @@ export const UserViews: React.FC<UserViewsProps> = ({
     t.createdByCedula === currentUser.cedula ||
     t.assignedToCedula === 'ABIERTA';
 
+  // Tareas base según la sección activa (Sección Personal del usuario que ingresó vs Tareas del Grupo)
+  const sectionTasks = tasks.filter(t =>
+    taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true
+  );
+
+  // Contadores y porcentaje único de la sección activa para el usuario que ingresó
+  const totalSectionTasks = sectionTasks.length;
+  const sectionCompletedCount = sectionTasks.filter(t => t.status === 'completada').length;
+  const sectionInProgressCount = sectionTasks.filter(t => t.status === 'en_progreso').length;
+  const sectionStartedCount = sectionTasks.filter(t => t.status === 'pendiente').length;
+  const sectionPendingTotalCount = sectionStartedCount + sectionInProgressCount;
+
+  const sectionProgressPercent =
+    totalSectionTasks > 0
+      ? Math.round(
+          sectionTasks.reduce((acc, t) => {
+            if (t.status === 'completada') return acc + 100;
+            if (t.status === 'en_progreso')
+              return acc + (typeof t.progress === 'number' && t.progress > 0 ? t.progress : 50);
+            return acc + (typeof t.progress === 'number' ? t.progress : 0);
+          }, 0) / totalSectionTasks
+        )
+      : 0;
+
   // Contadores para los filtros rápidos
   const myPendingTasksCount = tasks.filter(
     t => isTaskVisibleInPersonal(t) && t.status !== 'completada'
   ).length;
-  const completedTasksCount = tasks.filter(t => {
-    const inScope = taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true;
-    return inScope && t.status === 'completada';
-  }).length;
-  const criticalTasksCount = tasks.filter(t => {
-    const inScope = taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true;
-    return inScope && t.priority === 'critica';
-  }).length;
+  const completedTasksCount = sectionCompletedCount;
+  const criticalTasksCount = sectionTasks.filter(t => t.priority === 'critica').length;
 
   // Filtrar según el botón corredizo (Personales vs Grupo Empresarial) y filtro rápido activo
   const scopedTasks = tasks.filter(t => {
@@ -160,7 +246,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
   const completedCount = scopedTasks.filter(t => t.status === 'completada').length;
   const inProgressCount = scopedTasks.filter(t => t.status === 'en_progreso').length;
   const startedCount = scopedTasks.filter(t => t.status === 'pendiente').length;
-  const completionPercent = totalScoped > 0 ? Math.round((completedCount / totalScoped) * 100) : 0;
+  const completionPercent = sectionProgressPercent;
 
   // Cambiar el estado con un solo clic a: 'Iniciada', 'En proceso' o 'Hecha'
   const handleSetStatus = async (task: TaskItem, newStatus: TaskStatus) => {
@@ -345,6 +431,58 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   return (
     <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>
+      {/* COMPONENTE VISUAL DE BARRA DE PROGRESO CIRCULAR ÚNICA (Sección Personal o Tareas del Grupo del Usuario Actual) */}
+      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3.5">
+            <CircularProgressRing
+              percentage={sectionProgressPercent}
+              size={isMobile ? 58 : 66}
+              strokeWidth={6}
+              colorClass={
+                sectionProgressPercent >= 80
+                  ? 'text-emerald-600'
+                  : sectionProgressPercent >= 40
+                  ? 'text-[#3B82F6]'
+                  : 'text-[#0B2559]'
+              }
+              trackClass="text-[#D6EAFF]"
+              labelSizeClass="text-xs"
+            />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-bold text-[#0B2559]">
+                  {taskScope === 'personales'
+                    ? `Avance de Sección Personal — ${currentUser.name}`
+                    : `Avance de Tareas del Grupo Empresarial — ${currentUser.name}`}
+                </h2>
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#0B2559] text-white">
+                  {taskScope === 'personales' ? 'Sección Personal' : 'Tareas del Grupo'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#3B82F6] mt-0.5">
+                {taskScope === 'personales'
+                  ? 'Porcentaje de avance de tus tareas personales asignadas, creadas por ti o abiertas.'
+                  : 'Porcentaje de avance general de las tareas en la sección del Grupo Empresarial.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Resumen numérico tabular de la sección activa */}
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tabular-nums sm:justify-end">
+            <span className="px-2.5 py-1 rounded-xl font-bold bg-amber-50 text-amber-800 border border-amber-200">
+              Pendientes: {sectionPendingTotalCount}
+            </span>
+            <span className="px-2.5 py-1 rounded-xl font-bold bg-[#EAF3FF] text-[#0B2559] border border-[#B3D9FF]">
+              En proceso: {sectionInProgressCount}
+            </span>
+            <span className="px-2.5 py-1 rounded-xl font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              Hechas: {sectionCompletedCount}
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Barra Superior con el Botón Corredizo, Botón Crear Tarea, Filtros Rápidos y Botón Tipo Filtro */}
       <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs relative space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
