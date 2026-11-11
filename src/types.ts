@@ -14,6 +14,7 @@ export interface AppUser {
   canViewVault: boolean;
   canExportReports: boolean;
   canCreateEvents?: boolean;
+  canCompleteTasks?: boolean;
   approvalStatus?: 'aprobado' | 'pendiente' | 'rechazado';
   // Datos personales de la cédula, ubicación, residencia, familiares y bancarios (visibles solo por Admin)
   cedulaIssuePlace?: string;

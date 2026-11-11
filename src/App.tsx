@@ -20,6 +20,10 @@ import {
   syncCollectionToPermanentVault,
   readUserEventPermissions,
   USER_EVENT_PERMS_STORAGE_KEY,
+  readUserCompleteTaskPermissions,
+  USER_COMPLETE_TASK_PERMS_STORAGE_KEY,
+  readUserEditTaskPermissions,
+  USER_EDIT_TASK_PERMS_STORAGE_KEY,
 } from './firebase';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { AdminViews } from './components/AdminViews';
@@ -33,6 +37,7 @@ type NavSection =
   | 'admin_audit'
   | 'admin_backup'
   | 'admin_resend'
+  | 'admin_evaluation'
   | 'user_personal'
   | 'user_all_tasks'
   | 'user_priority_alerts'
@@ -58,15 +63,33 @@ export default function App() {
   const [eventPermsMap, setEventPermsMap] = useState<Record<string, boolean>>(() =>
     readUserEventPermissions()
   );
+  const [completeTaskPermsMap, setCompleteTaskPermsMap] = useState<Record<string, boolean>>(() =>
+    readUserCompleteTaskPermissions()
+  );
+  const [editTaskPermsMap, setEditTaskPermsMap] = useState<Record<string, boolean>>(() =>
+    readUserEditTaskPermissions()
+  );
   const [rawUsers, setRawUsers] = useState<AppUser[]>(() => Object.values(readPermanentVault().users));
   const users: AppUser[] = rawUsers.map(u => ({
     ...u,
+    canEditTasks:
+      u.cedula === SINGLE_ADMIN_CEDULA || u.role === 'admin'
+        ? true
+        : editTaskPermsMap[u.cedula] !== undefined
+        ? Boolean(editTaskPermsMap[u.cedula])
+        : false,
     canCreateEvents:
       u.cedula === SINGLE_ADMIN_CEDULA || u.role === 'admin'
         ? true
         : eventPermsMap[u.cedula] !== undefined
         ? Boolean(eventPermsMap[u.cedula])
         : Boolean(u.canCreateEvents),
+    canCompleteTasks:
+      u.cedula === SINGLE_ADMIN_CEDULA || u.role === 'admin'
+        ? true
+        : completeTaskPermsMap[u.cedula] !== undefined
+        ? Boolean(completeTaskPermsMap[u.cedula])
+        : Boolean(u.canCompleteTasks),
   }));
   const [tasks, setTasks] = useState<TaskItem[]>(() => Object.values(readPermanentVault().tasks));
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() =>
@@ -81,7 +104,13 @@ export default function App() {
   );
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() =>
     Object.values(readPermanentVault().calendarEvents).filter(
-      ev => ev.id !== 'config_event_permissions' && ev.date !== 'CONFIG_PERMS'
+      ev =>
+        ev.id !== 'config_event_permissions' &&
+        ev.date !== 'CONFIG_PERMS' &&
+        ev.id !== 'config_complete_task_permissions' &&
+        ev.date !== 'CONFIG_COMPLETE_TASK_PERMS' &&
+        ev.id !== 'config_edit_task_permissions' &&
+        ev.date !== 'CONFIG_EDIT_TASK_PERMS'
     )
   );
   const [loadingData, setLoadingData] = useState(() => Object.keys(readPermanentVault().users).length === 0);
@@ -173,8 +202,20 @@ export default function App() {
     const handlePermsUpdated = () => {
       setEventPermsMap(readUserEventPermissions());
     };
+    const handleCompleteTaskPermsUpdated = () => {
+      setCompleteTaskPermsMap(readUserCompleteTaskPermissions());
+    };
+    const handleEditTaskPermsUpdated = () => {
+      setEditTaskPermsMap(readUserEditTaskPermissions());
+    };
     window.addEventListener('ulep_event_perms_updated', handlePermsUpdated);
-    return () => window.removeEventListener('ulep_event_perms_updated', handlePermsUpdated);
+    window.addEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
+    window.addEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
+    return () => {
+      window.removeEventListener('ulep_event_perms_updated', handlePermsUpdated);
+      window.removeEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
+      window.removeEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
+    };
   }, []);
 
   useEffect(() => {
@@ -246,6 +287,42 @@ export default function App() {
               if (parsed && typeof parsed === 'object') {
                 window.localStorage.setItem(USER_EVENT_PERMS_STORAGE_KEY, JSON.stringify(parsed));
                 setEventPermsMap(parsed);
+              }
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          if (
+            d.id === 'config_complete_task_permissions' ||
+            docData.date === 'CONFIG_COMPLETE_TASK_PERMS'
+          ) {
+            try {
+              const parsed = JSON.parse(docData.description || '{}');
+              if (parsed && typeof parsed === 'object') {
+                window.localStorage.setItem(
+                  USER_COMPLETE_TASK_PERMS_STORAGE_KEY,
+                  JSON.stringify(parsed)
+                );
+                setCompleteTaskPermsMap(parsed);
+              }
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          if (
+            d.id === 'config_edit_task_permissions' ||
+            docData.date === 'CONFIG_EDIT_TASK_PERMS'
+          ) {
+            try {
+              const parsed = JSON.parse(docData.description || '{}');
+              if (parsed && typeof parsed === 'object') {
+                window.localStorage.setItem(
+                  USER_EDIT_TASK_PERMS_STORAGE_KEY,
+                  JSON.stringify(parsed)
+                );
+                setEditTaskPermsMap(parsed);
               }
             } catch {
               // ignore
@@ -696,7 +773,7 @@ export default function App() {
         isOnline: false,
         lastSeen: nowIso,
         canCreateTasks: true,
-        canEditTasks: true,
+        canEditTasks: false,
         canDeleteTasks: false,
         canSendChat: true,
         canViewVault: false,
@@ -795,6 +872,13 @@ export default function App() {
   const handleSaveTaskModal = async (task: TaskItem) => {
     if (!currentUser) return;
     const isEditing = Boolean(editingTask);
+    const canEditActivity =
+      currentUser.role === 'admin' ||
+      currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+      Boolean(currentUser.canEditTasks);
+    if (isEditing && !canEditActivity) {
+      return;
+    }
     await saveTaskToFirestore(task);
 
     const dueDay = task.dueDate.split('T')[0];
@@ -1784,6 +1868,11 @@ export default function App() {
       iconClass: 'fi fi-rr-calendar',
       badge: currentMonthEventsCount,
     },
+    {
+      id: 'admin_evaluation',
+      label: 'Evaluación',
+      iconClass: 'fi fi-rr-chart-histogram',
+    },
   ];
 
   const urgentTasksCount = tasks.filter(
@@ -2050,7 +2139,9 @@ export default function App() {
             isMobileView ? 'max-w-lg' : isTabletView ? 'max-w-5xl' : 'max-w-6xl'
           }`}
         >
-          {activePanelMode === 'admin' && currentUser.role === 'admin' && activeSection !== 'user_calendar' ? (
+          {activePanelMode === 'admin' &&
+          currentUser.role === 'admin' &&
+          activeSection !== 'user_calendar' ? (
             <AdminViews
               activeSection={
                 (activeSection.startsWith('admin_') ? activeSection : 'admin_users') as
@@ -2060,6 +2151,7 @@ export default function App() {
                   | 'admin_audit'
                   | 'admin_backup'
                   | 'admin_resend'
+                  | 'admin_evaluation'
               }
               currentUser={currentUser}
               users={users}
@@ -2100,8 +2192,14 @@ export default function App() {
                 setTaskModalOpen(true);
               }}
               onEditTask={(t: TaskItem) => {
-                setEditingTask(t);
-                setTaskModalOpen(true);
+                if (
+                  currentUser.role === 'admin' ||
+                  currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+                  Boolean(currentUser.canEditTasks)
+                ) {
+                  setEditingTask(t);
+                  setTaskModalOpen(true);
+                }
               }}
             />
           )}

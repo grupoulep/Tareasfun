@@ -91,12 +91,13 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
 
   // Permisos
   const [canCreateTasks, setCanCreateTasks] = useState(true);
-  const [canEditTasks, setCanEditTasks] = useState(true);
+  const [canEditTasks, setCanEditTasks] = useState(false);
   const [canDeleteTasks, setCanDeleteTasks] = useState(false);
   const [canSendChat, setCanSendChat] = useState(true);
   const [canViewVault, setCanViewVault] = useState(true);
   const [canExportReports, setCanExportReports] = useState(true);
   const [canCreateEvents, setCanCreateEvents] = useState(false);
+  const [canCompleteTasks, setCanCompleteTasks] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -133,18 +134,19 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
 
       const isSingleAdmin = user.cedula === SINGLE_ADMIN_CEDULA;
       setCanCreateTasks(isSingleAdmin ? true : (user.canCreateTasks ?? true));
-      setCanEditTasks(isSingleAdmin ? true : (user.canEditTasks ?? true));
+      setCanEditTasks(isSingleAdmin ? true : Boolean(user.canEditTasks));
       setCanDeleteTasks(isSingleAdmin ? true : (user.canDeleteTasks ?? false));
       setCanSendChat(isSingleAdmin ? true : (user.canSendChat ?? true));
       setCanViewVault(isSingleAdmin ? true : (user.canViewVault ?? true));
       setCanExportReports(isSingleAdmin ? true : (user.canExportReports ?? true));
       setCanCreateEvents(isSingleAdmin ? true : Boolean(user.canCreateEvents));
+      setCanCompleteTasks(isSingleAdmin ? true : Boolean(user.canCompleteTasks));
 
       setAdminAuthCedula('');
       setAdminOldPassword('');
       setAdminNewPassword('');
       setActiveTab(initialTab || 'personal');
-      setExpandAllFields(undefined);
+      setExpandAllFields(true);
       setSuccessMessage(null);
       setErrorMessage(null);
     }
@@ -236,6 +238,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         canViewVault: isTargetSingleAdmin ? true : canViewVault,
         canExportReports: isTargetSingleAdmin ? true : canExportReports,
         canCreateEvents: isTargetSingleAdmin ? true : canCreateEvents,
+        canCompleteTasks: isTargetSingleAdmin ? true : canCompleteTasks,
       };
 
       await saveUserToFirestore(updatedUser);
@@ -276,23 +279,18 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/70 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-t-3xl sm:rounded-2xl border-t-2 sm:border-2 border-[#B3D9FF] w-full max-w-4xl max-h-[94vh] sm:max-h-[92vh] flex flex-col shadow-2xl overflow-hidden sm:my-auto animate-fadeIn">
-        {/* Barra de arrastre para Teléfono */}
-        <div className="sm:hidden pt-2 pb-1 bg-[#0B2559] flex justify-center">
-          <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]/50" />
-        </div>
-
-        {/* Modal Header */}
-        <div className="px-4 sm:px-5 py-3.5 sm:py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
+    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+      <div className="bg-white w-full h-full flex flex-col overflow-hidden animate-fadeIn">
+        {/* Modal Header en Toda la Pantalla */}
+        <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <span className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0 shadow-2xs font-bold">
               <i className="fi fi-rr-edit text-base sm:text-lg" />
             </span>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-sm sm:text-base font-bold text-white truncate">
-                  {isTargetSingleAdmin ? 'Administrador Único del Sistema' : 'Editar Ficha Personal y Usuario'}
+                <h2 className="text-sm sm:text-lg font-bold text-white truncate">
+                  {isTargetSingleAdmin ? 'Administrador Único del Sistema' : 'Detalle y Ficha Completa del Usuario'}
                 </h2>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#B3D9FF] text-[#0B2559] font-bold">
                   C.C. {user.cedula}
@@ -304,11 +302,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       : 'bg-white/20 text-white'
                   }`}
                 >
-                  {isTargetSingleAdmin ? 'Admin Único · No Eliminable' : 'Usuario'}
+                  {isTargetSingleAdmin ? 'Admin Único · No Eliminable' : 'Vista Pantalla Completa'}
                 </span>
               </div>
               <p className="hidden sm:block text-xs text-[#B3D9FF] mt-0.5 truncate">
-                Haz clic en la palabra principal de cada dato para desplegar su cuadro de llenado.
+                Vista ampliada en toda la pantalla para consultar y editar datos personales, ubicación, familia, banco y permisos.
               </p>
             </div>
           </div>
@@ -317,7 +315,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <button
               type="button"
               onClick={() => setExpandAllFields(prev => !prev)}
-              className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-[11px] font-bold flex items-center gap-1.5 transition-colors"
+              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
               title="Desplegar o minimizar todos los campos de esta pantalla"
             >
               <i className={`fi ${expandAllFields ? 'fi-rr-compress-alt' : 'fi-rr-expand-arrows-alt'} text-xs`} />
@@ -327,10 +325,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="w-9 h-9 sm:w-8 sm:h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors text-sm shrink-0"
+              className="px-3.5 py-2 rounded-xl bg-[#B3D9FF] hover:bg-white text-[#0B2559] font-bold flex items-center gap-1.5 transition-colors text-xs shrink-0"
               title="Cerrar ventana"
             >
-              <i className="fi fi-rr-cross text-xs" />
+              <i className="fi fi-rr-cross-small text-base" />
+              <span>Cerrar</span>
             </button>
           </div>
         </div>
@@ -354,7 +353,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         </div>
 
         {/* Tab Navigation en Tablet y PC */}
-        <div className="hidden sm:flex bg-[#F4F9FF] border-b border-[#D6EAFF] px-4 pt-2 items-center gap-1.5 overflow-x-auto shrink-0 scrollbar-thin">
+        <div className="hidden sm:flex bg-[#F4F9FF] border-b border-[#D6EAFF] px-8 pt-2.5 items-center gap-2 overflow-x-auto shrink-0 scrollbar-thin">
           {tabs.map(tab => {
             const isActive = activeTab === tab.key;
             return (
@@ -362,7 +361,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 key={tab.key}
                 type="button"
                 onClick={() => setActiveTab(tab.key)}
-                className={`px-3 py-2 text-xs font-bold rounded-t-xl transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 border-t border-x ${
+                className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all flex items-center gap-2 whitespace-nowrap shrink-0 border-t border-x ${
                   isActive
                     ? 'bg-white text-[#0B2559] border-[#B3D9FF] border-b-transparent shadow-xs -mb-px'
                     : 'text-[#0B2559]/70 border-transparent hover:text-[#0B2559] hover:bg-[#EAF3FF]'
@@ -376,7 +375,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         </div>
 
         {/* Modal Form Body */}
-        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-white">
+        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#F4F9FF]/40">
+          <div className="max-w-7xl mx-auto w-full space-y-5 bg-white p-5 sm:p-7 rounded-2xl border border-[#B3D9FF] shadow-2xs">
           {successMessage && (
             <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-300 text-xs text-emerald-900 font-bold flex items-center gap-2 animate-fadeIn">
               <i className="fi fi-rr-check-circle text-base text-emerald-600 shrink-0" />
@@ -993,7 +993,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                   {[
                     { label: 'Crear Tareas', value: canCreateTasks, toggle: () => !isTargetSingleAdmin && setCanCreateTasks(!canCreateTasks) },
-                    { label: 'Editar Tareas y Progreso', value: canEditTasks, toggle: () => !isTargetSingleAdmin && setCanEditTasks(!canEditTasks) },
+                    { label: 'Editar Actividades (Personal Autorizado)', value: canEditTasks, toggle: () => !isTargetSingleAdmin && setCanEditTasks(!canEditTasks) },
+                    { label: 'Marcar Tareas como Hechas', value: canCompleteTasks, toggle: () => !isTargetSingleAdmin && setCanCompleteTasks(!canCompleteTasks) },
                     { label: 'Eliminar Tareas', value: canDeleteTasks, toggle: () => !isTargetSingleAdmin && setCanDeleteTasks(!canDeleteTasks) },
                     { label: 'Agregar Eventos', value: canCreateEvents, toggle: () => !isTargetSingleAdmin && setCanCreateEvents(!canCreateEvents) },
                     { label: 'Enviar Mensajes de Chat', value: canSendChat, toggle: () => !isTargetSingleAdmin && setCanSendChat(!canSendChat) },
@@ -1037,15 +1038,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 type="button"
                 onClick={onClose}
                 disabled={saving}
-                className="px-4 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#F4F9FF] transition-colors"
+                className="px-5 py-2.5 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#F4F9FF] transition-colors"
               >
-                Cancelar
+                Cerrar Vista
               </button>
 
               <button
                 type="submit"
                 disabled={saving}
-                className="px-5 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#1A3A73] rounded-xl transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
+                className="px-6 py-2.5 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#1A3A73] rounded-xl transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
               >
                 {saving ? (
                   <>
@@ -1060,6 +1061,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                 )}
               </button>
             </div>
+          </div>
           </div>
         </form>
       </div>

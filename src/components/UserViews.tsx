@@ -167,6 +167,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
   tasks,
   calendarEvents = [],
   onOpenNewTask,
+  onEditTask,
   deviceMode = 'pc',
 }) => {
   const isMobile = deviceMode === 'mobile';
@@ -174,6 +175,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
   // Estados para la sección Eventos (Calendario del mes actual)
   const [calendarDate, setCalendarDate] = useState<Date>(() => new Date());
   const [isAddEventModalOpen, setIsAddEventModalOpen] = useState(false);
+  const [viewingEvent, setViewingEvent] = useState<CalendarEvent | null>(null);
   const [eventTitle, setEventTitle] = useState('');
   const [eventDate, setEventDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [eventStartTime, setEventStartTime] = useState('08:00');
@@ -227,6 +229,17 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Ocultar o mostrar hechas
   const [showCompleted, setShowCompleted] = useState(true);
+  const [taskCompletePermNotice, setTaskCompletePermNotice] = useState<string | null>(null);
+
+  const canMarkTaskDone =
+    currentUser.role === 'admin' ||
+    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+    Boolean(currentUser.canCompleteTasks);
+
+  const canEditActivity =
+    currentUser.role === 'admin' ||
+    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+    Boolean(currentUser.canEditTasks);
 
   // Botón corredizo: Tareas Personales vs Tareas del Grupo Empresarial
   const [taskScope, setTaskScope] = useState<'personales' | 'grupo'>('personales');
@@ -287,6 +300,14 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Cambiar el estado con un solo clic a: 'Iniciada', 'En proceso' o 'Hecha'
   const handleSetStatus = async (task: TaskItem, newStatus: TaskStatus) => {
+    if ((newStatus === 'completada' || task.status === 'completada') && !canMarkTaskDone) {
+      setTaskCompletePermNotice(
+        'Solo el Administrador o usuarios con permiso habilitado por el Admin pueden marcar la tarea como Hecha.'
+      );
+      setTimeout(() => setTaskCompletePermNotice(null), 4000);
+      return;
+    }
+
     let progress = 0;
     if (newStatus === 'completada') progress = 100;
     else if (newStatus === 'en_progreso') progress = 50;
@@ -325,6 +346,14 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Cambiar encargado(s) de una tarea existente (1 o varios usuarios -> tareas separadas)
   const handleApplyViewingAssignees = async (task: TaskItem, selectedCedulas: string[]) => {
+    if (!canEditActivity) {
+      setTaskCompletePermNotice(
+        'Después de crear una actividad, solo el Administrador y el personal autorizado pueden editarla.'
+      );
+      setTimeout(() => setTaskCompletePermNotice(null), 4000);
+      return;
+    }
+
     const effective =
       selectedCedulas.length > 0 ? selectedCedulas : [task.assignedToCedula || 'ABIERTA'];
 
@@ -389,6 +418,13 @@ export const UserViews: React.FC<UserViewsProps> = ({
   };
 
   const toggleViewingAssignee = (targetCedula: string) => {
+    if (!canEditActivity) {
+      setTaskCompletePermNotice(
+        'Después de crear una actividad, solo el Administrador y el personal autorizado pueden editarla.'
+      );
+      setTimeout(() => setTaskCompletePermNotice(null), 4000);
+      return;
+    }
     if (targetCedula === 'ABIERTA') {
       setViewingAssignees(['ABIERTA']);
       return;
@@ -838,9 +874,12 @@ export const UserViews: React.FC<UserViewsProps> = ({
                     {dayEvents.map(ev => (
                       <div
                         key={ev.id}
-                        onClick={e => e.stopPropagation()}
-                        className="px-1.5 py-1 rounded-lg bg-[#EAF3FF] border border-[#B3D9FF] text-[#0B2559] text-[10px] leading-tight"
-                        title={`${ev.emoji || '📅'} ${ev.title} (${ev.startTime} - ${ev.endTime})`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setViewingEvent(ev);
+                        }}
+                        className="px-1.5 py-1 rounded-lg bg-[#EAF3FF] hover:bg-[#D6EAFF] border border-[#B3D9FF] text-[#0B2559] text-[10px] leading-tight cursor-pointer transition-colors"
+                        title={`Haz clic para ver el detalle en pantalla completa: ${ev.emoji || '📅'} ${ev.title} (${ev.startTime} - ${ev.endTime})`}
                       >
                         <div className="font-bold truncate flex items-center gap-1">
                           <span>{ev.emoji || '📅'}</span>
@@ -886,7 +925,8 @@ export const UserViews: React.FC<UserViewsProps> = ({
               {monthEvents.map(ev => (
                 <div
                   key={ev.id}
-                  className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex items-center justify-between gap-3"
+                  onClick={() => setViewingEvent(ev)}
+                  className="p-3 rounded-xl bg-[#F4F9FF] hover:bg-[#EAF3FF] border border-[#B3D9FF] flex items-center justify-between gap-3 cursor-pointer transition-colors"
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-xl bg-white border border-[#B3D9FF] flex items-center justify-center text-lg shrink-0 shadow-2xs">
@@ -909,94 +949,213 @@ export const UserViews: React.FC<UserViewsProps> = ({
                     </div>
                   </div>
 
-                  {(currentUser.role === 'admin' ||
-                    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
-                    ev.createdByCedula === currentUser.cedula) && (
+                  <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
                     <button
                       type="button"
-                      onClick={() => handleDeleteCalendarEvent(ev)}
-                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors shrink-0"
-                      title="Eliminar evento"
+                      onClick={() => setViewingEvent(ev)}
+                      className="p-2 text-[#0B2559] hover:bg-white rounded-lg transition-colors"
+                      title="Ver detalle en toda la pantalla"
                     >
-                      <i className="fi fi-rr-trash text-xs" />
+                      <i className="fi fi-rr-eye text-xs" />
                     </button>
-                  )}
+                    {(currentUser.role === 'admin' ||
+                      currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+                      ev.createdByCedula === currentUser.cedula) && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCalendarEvent(ev)}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        title="Eliminar evento"
+                      >
+                        <i className="fi fi-rr-trash text-xs" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        {/* Modal para Agregar Evento */}
-        {isAddEventModalOpen && canUserAddEvents && (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/60 backdrop-blur-xs">
-            <div className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-2xl shadow-xl border border-[#B3D9FF] overflow-hidden">
-              <div className="px-5 py-3.5 bg-[#0B2559] text-white flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <i className="fi fi-rr-calendar-plus text-sm text-[#B3D9FF]" />
-                  <h3 className="text-sm font-bold">Agregar Evento</h3>
+        {/* Detalle del Evento en Toda la Pantalla */}
+        {viewingEvent && (
+          <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+            <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center text-xl shrink-0">
+                  {viewingEvent.emoji || '📅'}
+                </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm sm:text-lg font-bold text-white truncate">
+                      {viewingEvent.title}
+                    </h3>
+                    <span className="text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-md bg-[#B3D9FF] text-[#0B2559]">
+                      Detalle del Evento · Pantalla Completa
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#B3D9FF] mt-0.5">
+                    Fecha: {viewingEvent.date} · Horario: {viewingEvent.startTime} - {viewingEvent.endTime}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsAddEventModalOpen(false)}
-                  className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
-                >
-                  <i className="fi fi-rr-cross-small text-base" />
-                </button>
               </div>
+              <button
+                type="button"
+                onClick={() => setViewingEvent(null)}
+                className="px-4 py-2 rounded-xl bg-[#B3D9FF] hover:bg-white text-[#0B2559] font-bold text-xs flex items-center gap-1.5 transition-colors shrink-0"
+              >
+                <i className="fi fi-rr-cross-small text-base" />
+                <span>Cerrar Vista</span>
+              </button>
+            </div>
 
-              <form onSubmit={handleCreateCalendarEvent} className="p-5 space-y-4 text-xs">
-                <div>
-                  <label className="block font-bold text-[#0B2559] mb-1">
-                    Nombre del Evento
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={eventTitle}
-                    onChange={e => setEventTitle(e.target.value)}
-                    placeholder="Ej. Reunión mensual de seguimiento"
-                    className="w-full min-h-[42px] px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-bold text-[#0B2559] mb-1">
-                    Fecha del Evento
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={eventDate}
-                    onChange={e => setEventDate(e.target.value)}
-                    className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-[#0B2559] mb-1">
-                      Hora de Inicio
-                    </label>
-                    <input
-                      type="time"
-                      required
-                      value={eventStartTime}
-                      onChange={e => setEventStartTime(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
-                    />
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+              <div className="max-w-5xl mx-auto w-full bg-white border border-[#B3D9FF] rounded-2xl p-6 sm:p-8 shadow-2xs space-y-6">
+                <div className="flex items-center gap-4 pb-5 border-b border-[#D6EAFF]">
+                  <div className="w-16 h-16 rounded-2xl bg-[#F4F9FF] border border-[#B3D9FF] flex items-center justify-center text-3xl shrink-0">
+                    {viewingEvent.emoji || '📅'}
                   </div>
                   <div>
-                    <label className="block font-bold text-[#0B2559] mb-1">
-                      Hora Final
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#3B82F6]">
+                      Nombre del Evento
+                    </span>
+                    <h2 className="text-lg sm:text-2xl font-bold text-[#0B2559] mt-0.5">
+                      {viewingEvent.title}
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                    <span className="text-xs font-bold text-[#3B82F6] uppercase block">Fecha Programada</span>
+                    <strong className="text-base font-mono text-[#0B2559] mt-1 block">{viewingEvent.date}</strong>
+                  </div>
+                  <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                    <span className="text-xs font-bold text-[#3B82F6] uppercase block">Hora Inicio / Hora Final</span>
+                    <strong className="text-base font-mono text-[#0B2559] mt-1 block">
+                      {viewingEvent.startTime} — {viewingEvent.endTime}
+                    </strong>
+                  </div>
+                  <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                    <span className="text-xs font-bold text-[#3B82F6] uppercase block">Registrado Por</span>
+                    <strong className="text-base text-[#0B2559] mt-1 block">
+                      {viewingEvent.createdByName || 'Administrador'}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-4 border-t border-[#D6EAFF]">
+                  {(currentUser.role === 'admin' ||
+                    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+                    viewingEvent.createdByCedula === currentUser.cedula) ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await handleDeleteCalendarEvent(viewingEvent);
+                        setViewingEvent(null);
+                      }}
+                      className="px-4 py-2.5 rounded-xl text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 flex items-center gap-2"
+                    >
+                      <i className="fi fi-rr-trash text-xs" />
+                      <span>Eliminar Evento</span>
+                    </button>
+                  ) : (
+                    <div />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setViewingEvent(null)}
+                    className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A]"
+                  >
+                    Cerrar Pantalla Completa
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal para Agregar Evento en Toda la Pantalla */}
+        {isAddEventModalOpen && canUserAddEvents && (
+          <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+            <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
+              <div className="flex items-center gap-3">
+                <span className="w-9 h-9 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center">
+                  <i className="fi fi-rr-calendar-plus text-sm" />
+                </span>
+                <div>
+                  <h3 className="text-sm sm:text-lg font-bold">Agregar Evento al Calendario (Pantalla Completa)</h3>
+                  <p className="text-xs text-[#B3D9FF]">Define el nombre, fecha, hora de inicio, hora final y emoji del evento.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddEventModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-[#B3D9FF] hover:bg-white text-[#0B2559] font-bold text-xs flex items-center gap-1.5"
+              >
+                <i className="fi fi-rr-cross-small text-base" />
+                <span>Cerrar</span>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+              <form
+                onSubmit={handleCreateCalendarEvent}
+                className="max-w-4xl mx-auto w-full bg-white border border-[#B3D9FF] rounded-2xl p-6 sm:p-8 shadow-2xs space-y-5 text-xs"
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-[#0B2559] mb-1.5 text-sm">
+                      Nombre del Evento
                     </label>
                     <input
-                      type="time"
+                      type="text"
                       required
-                      value={eventEndTime}
-                      onChange={e => setEventEndTime(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                      value={eventTitle}
+                      onChange={e => setEventTitle(e.target.value)}
+                      placeholder="Ej. Reunión mensual de seguimiento"
+                      className="w-full min-h-[44px] px-4 py-2.5 text-sm text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-[#0B2559] mb-1.5">
+                      Fecha del Evento
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={eventDate}
+                      onChange={e => setEventDate(e.target.value)}
+                      className="w-full min-h-[44px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-[#0B2559] mb-1.5">
+                        Hora de Inicio
+                      </label>
+                      <input
+                        type="time"
+                        required
+                        value={eventStartTime}
+                        onChange={e => setEventStartTime(e.target.value)}
+                        className="w-full min-h-[44px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-[#0B2559] mb-1.5">
+                        Hora Final
+                      </label>
+                      <input
+                        type="time"
+                        required
+                        value={eventEndTime}
+                        onChange={e => setEventEndTime(e.target.value)}
+                        className="w-full min-h-[44px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1010,19 +1169,19 @@ export const UserViews: React.FC<UserViewsProps> = ({
                       value={eventEmoji}
                       onChange={e => setEventEmoji(e.target.value)}
                       maxLength={8}
-                      className="w-16 min-h-[42px] text-center text-lg bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                      className="w-16 min-h-[44px] text-center text-lg bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
                     />
-                    <span className="text-[11px] text-[#3B82F6]">
-                      Selecciona un emoji o escríbelo directamente
+                    <span className="text-xs text-[#3B82F6]">
+                      Selecciona un emoji de la lista o escríbelo directamente
                     </span>
                   </div>
-                  <div className="grid grid-cols-10 gap-1.5 p-2 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                  <div className="grid grid-cols-10 gap-2 p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
                     {EVENT_EMOJI_OPTIONS.map(em => (
                       <button
                         key={em}
                         type="button"
                         onClick={() => setEventEmoji(em)}
-                        className={`h-8 rounded-lg flex items-center justify-center text-base transition-all ${
+                        className={`h-10 rounded-xl flex items-center justify-center text-lg transition-all ${
                           eventEmoji === em
                             ? 'bg-[#0B2559] text-white shadow-2xs scale-105'
                             : 'bg-white hover:bg-[#EAF3FF]'
@@ -1035,22 +1194,22 @@ export const UserViews: React.FC<UserViewsProps> = ({
                 </div>
 
                 {eventFormError && (
-                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
                     {eventFormError}
                   </div>
                 )}
 
-                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#D6EAFF]">
+                <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-[#D6EAFF]">
                   <button
                     type="button"
                     onClick={() => setIsAddEventModalOpen(false)}
-                    className="min-h-[40px] px-4 py-2 rounded-xl font-bold text-[#0B2559] bg-white border border-[#B3D9FF] hover:bg-[#F4F9FF]"
+                    className="min-h-[42px] px-5 py-2.5 rounded-xl font-bold text-[#0B2559] bg-white border border-[#B3D9FF] hover:bg-[#F4F9FF]"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
-                    className="min-h-[40px] px-5 py-2 rounded-xl font-bold text-white bg-[#0B2559] hover:bg-[#15397A]"
+                    className="min-h-[42px] px-6 py-2.5 rounded-xl font-bold text-white bg-[#0B2559] hover:bg-[#15397A]"
                   >
                     Guardar Evento
                   </button>
@@ -1116,6 +1275,22 @@ export const UserViews: React.FC<UserViewsProps> = ({
           </div>
         </div>
       </div>
+
+      {taskCompletePermNotice && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 text-xs font-bold flex items-center justify-between gap-2 shadow-2xs">
+          <span className="flex items-center gap-2">
+            <i className="fi fi-rr-lock text-amber-600 text-sm" />
+            <span>{taskCompletePermNotice}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setTaskCompletePermNotice(null)}
+            className="text-amber-700 hover:text-amber-900 p-1"
+          >
+            <i className="fi fi-rr-cross-small text-sm" />
+          </button>
+        </div>
+      )}
 
       {/* Barra Superior con el Botón Corredizo, Botón Crear Tarea, Filtros Rápidos y Botón Tipo Filtro */}
       <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs relative space-y-3">
@@ -1510,13 +1685,27 @@ export const UserViews: React.FC<UserViewsProps> = ({
                               type="button"
                               onClick={() => handleToggleCheck(task)}
                               className={`w-6 h-6 sm:w-5 sm:h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
-                                isDone
+                                !canMarkTaskDone
+                                  ? isDone
+                                    ? 'bg-emerald-600/75 border-emerald-600 text-white cursor-not-allowed'
+                                    : 'bg-slate-100 border-slate-300 text-slate-400 cursor-not-allowed'
+                                  : isDone
                                   ? 'bg-emerald-600 border-emerald-600 text-white'
                                   : 'bg-white border-[#B3D9FF] hover:border-[#0B2559] text-transparent'
                               }`}
-                              title={isDone ? 'Marcar como iniciada' : 'Marcar como hecha'}
+                              title={
+                                !canMarkTaskDone
+                                  ? 'Solo el Administrador o usuarios con permiso pueden marcar la tarea como hecha'
+                                  : isDone
+                                  ? 'Marcar como iniciada'
+                                  : 'Marcar como hecha'
+                              }
                             >
-                              <i className="fi fi-rr-check text-[10px] font-bold" />
+                              {!canMarkTaskDone && !isDone ? (
+                                <i className="fi fi-rr-lock text-[9px]" />
+                              ) : (
+                                <i className="fi fi-rr-check text-[10px] font-bold" />
+                              )}
                             </button>
 
                             <div
@@ -1608,24 +1797,42 @@ export const UserViews: React.FC<UserViewsProps> = ({
                                 className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-[11px] font-bold rounded-md transition-all whitespace-nowrap ${
                                   isDone
                                     ? 'bg-emerald-600 text-white shadow-2xs'
+                                    : !canMarkTaskDone
+                                    ? 'text-slate-400 cursor-not-allowed opacity-70'
                                     : 'text-emerald-700/80 hover:text-emerald-800'
                                 }`}
-                                title="Marcar como Hecha"
+                                title={
+                                  !canMarkTaskDone
+                                    ? 'Solo el Administrador o usuarios con permiso pueden marcar como Hecha'
+                                    : 'Marcar como Hecha'
+                                }
                               >
-                                ✓ Hecha
+                                {!canMarkTaskDone && !isDone ? '🔒 Hecha' : '✓ Hecha'}
                               </button>
                             </div>
 
                             <div className="flex items-center gap-1">
-                              {/* Botón Ver Detalles */}
+                              {/* Botón Ver Detalles en Pantalla Completa */}
                               <button
                                 type="button"
                                 onClick={() => setViewingTask(task)}
                                 className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-500 hover:text-[#0B2559] hover:bg-[#EAF3FF] rounded-lg transition-colors flex items-center justify-center"
-                                title="Ver detalles de la tarea"
+                                title="Abrir detalle de la actividad en toda la pantalla"
                               >
                                 <i className="fi fi-rr-eye text-xs" />
                               </button>
+
+                              {/* Botón Editar Actividad (solo Admin y Personal Autorizado) */}
+                              {canEditActivity && onEditTask && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditTask(task)}
+                                  className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-[#3B82F6] hover:text-[#0B2559] hover:bg-[#EAF3FF] rounded-lg transition-colors flex items-center justify-center"
+                                  title="Editar actividad (Admin / Personal Autorizado)"
+                                >
+                                  <i className="fi fi-rr-edit text-xs" />
+                                </button>
+                              )}
 
                               {/* Botón Eliminar (si tiene permisos) */}
                               {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
@@ -1651,308 +1858,436 @@ export const UserViews: React.FC<UserViewsProps> = ({
         })}
       </div>
 
-      {/* MODAL DE DETALLE DE LA TAREA */}
+      {/* DETALLE DE LA ACTIVIDAD EN TODA LA PANTALLA */}
       {viewingTask && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/50 backdrop-blur-xs">
-          <div className="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl shadow-xl border border-[#B3D9FF] overflow-hidden max-h-[90vh] flex flex-col">
-            {/* Barra de arrastre visual para Teléfono */}
-            <div className="sm:hidden pt-2.5 pb-1 bg-[#F4F9FF] flex justify-center">
-              <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]" />
+        <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+          {/* Cabecera en Toda la Pantalla */}
+          <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white border-b border-[#1A3A73] flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0">
+                <i className="fi fi-rr-eye text-base" />
+              </span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm sm:text-lg font-bold text-white truncate">
+                    Detalle Completo de la Actividad
+                  </h3>
+                  <span className="text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-md bg-[#B3D9FF] text-[#0B2559]">
+                    Pantalla Completa
+                  </span>
+                </div>
+                <p className="text-xs text-[#B3D9FF] truncate">
+                  {canEditActivity
+                    ? 'Tienes autorización para consultar y editar esta actividad.'
+                    : 'Modo consulta: después de creada la actividad, solo el Admin y personal autorizado pueden editarla.'}
+                </p>
+              </div>
             </div>
 
-            {/* Cabecera del Visor */}
-            <div className="px-5 py-3.5 sm:py-4 bg-[#F4F9FF] border-b border-[#D6EAFF] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-lg bg-[#0B2559] text-white flex items-center justify-center">
-                  <i className="fi fi-rr-eye text-xs" />
+            <div className="flex items-center gap-2 shrink-0">
+              {canEditActivity && onEditTask ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = viewingTask;
+                    setViewingTask(null);
+                    onEditTask(target);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0B2559] font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
+                >
+                  <i className="fi fi-rr-edit text-xs" />
+                  <span>Editar Actividad</span>
+                </button>
+              ) : (
+                <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 text-[#B3D9FF] text-xs font-semibold">
+                  <i className="fi fi-rr-lock text-xs" />
+                  <span>Edición restringida a Admin / Personal Autorizado</span>
                 </span>
-                <div>
-                  <h3 className="text-sm font-bold text-[#0B2559]">Detalle de la Actividad</h3>
-                  <p className="text-[10px] text-[#3B82F6]">Consulta de tarea y asignación de encargado</p>
-                </div>
-              </div>
+              )}
+
               <button
                 type="button"
                 onClick={() => setViewingTask(null)}
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-[#0B2559] hover:bg-[#EAF3FF] transition-colors"
+                className="px-4 py-2 rounded-xl bg-[#B3D9FF] hover:bg-white text-[#0B2559] font-bold text-xs flex items-center gap-1.5 transition-colors"
               >
                 <i className="fi fi-rr-cross-small text-base" />
+                <span>Cerrar</span>
               </button>
             </div>
+          </div>
 
-            {/* Contenido */}
-            <div className="p-5 space-y-4 text-xs overflow-y-auto">
-              {/* Título */}
-              <div>
-                <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
-                  Nombre de la Tarea
-                </label>
-                <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] font-bold text-[#0B2559] text-sm">
-                  {viewingTask.title}
-                </div>
-              </div>
-
-              {/* Botones de Cambio Rápido de Estado */}
-              <div>
-                <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1.5">
-                  Estado de la Actividad (Haz clic para cambiar)
-                </label>
-                <div className="grid grid-cols-3 gap-2">
+          {/* Cuerpo Amplio en Toda la Pantalla */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+            <div className="max-w-7xl mx-auto w-full space-y-6">
+              {taskCompletePermNotice && (
+                <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-3 text-xs font-bold flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2">
+                    <i className="fi fi-rr-lock text-amber-600 text-sm" />
+                    <span>{taskCompletePermNotice}</span>
+                  </span>
                   <button
                     type="button"
-                    onClick={() => handleSetStatus(viewingTask, 'pendiente')}
-                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
-                      viewingTask.status === 'pendiente'
-                        ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
-                        : 'bg-white text-[#0B2559] border-[#B3D9FF] hover:bg-[#F4F9FF]'
-                    }`}
+                    onClick={() => setTaskCompletePermNotice(null)}
+                    className="text-amber-700 hover:text-amber-900 p-1"
                   >
-                    <span>Iniciada</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSetStatus(viewingTask, 'en_progreso')}
-                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
-                      viewingTask.status === 'en_progreso'
-                        ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
-                        : 'bg-white text-amber-900 border-amber-200 hover:bg-amber-50'
-                    }`}
-                  >
-                    <span>En proceso</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSetStatus(viewingTask, 'completada')}
-                    className={`min-h-[42px] py-2 px-3 rounded-xl font-bold border flex items-center justify-center gap-1.5 transition-all ${
-                      viewingTask.status === 'completada'
-                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
-                        : 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50'
-                    }`}
-                  >
-                    <span>✓ Hecha</span>
+                    <i className="fi fi-rr-cross-small text-sm" />
                   </button>
                 </div>
-              </div>
+              )}
 
-              {/* Selector de Encargado */}
-              <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <label className="block text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
-                    Encargado de la Tarea
-                  </label>
-                  {(viewingAssignees.length > 1 ||
-                    (viewingAssignees.length === 1 &&
-                      viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA'))) && (
-                    <button
-                      type="button"
-                      onClick={() => handleApplyViewingAssignees(viewingTask, viewingAssignees)}
-                      className="px-2.5 py-1 rounded-lg bg-[#0B2559] text-white text-[10px] font-bold hover:bg-[#15397A] transition-colors"
-                    >
-                      Guardar
-                    </button>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Columna Principal (8 columnas en PC) */}
+                <div className="lg:col-span-8 space-y-6">
+                  {/* Título y Progreso */}
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#3B82F6] uppercase tracking-wider">
+                        Nombre de la Actividad / Tarea
+                      </span>
+                      <span className="text-xs font-mono font-bold text-[#0B2559]">
+                        Avance: {viewingTask.status === 'completada' ? 100 : viewingTask.progress}%
+                      </span>
+                    </div>
+                    <h2 className="text-lg sm:text-2xl font-bold text-[#0B2559] leading-snug">
+                      {viewingTask.title}
+                    </h2>
+                    <div className="w-full h-2.5 bg-[#EAF3FF] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#0B2559] transition-all duration-300"
+                        style={{
+                          width: `${viewingTask.status === 'completada' ? 100 : viewingTask.progress}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Estado de la Actividad */}
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-3">
+                    <label className="block text-xs font-bold text-[#0B2559] uppercase tracking-wider">
+                      Estado de la Actividad (Haz clic para cambiar)
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleSetStatus(viewingTask, 'pendiente')}
+                        className={`min-h-[46px] py-2.5 px-4 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition-all ${
+                          viewingTask.status === 'pendiente'
+                            ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
+                            : 'bg-white text-[#0B2559] border-[#B3D9FF] hover:bg-[#F4F9FF]'
+                        }`}
+                      >
+                        <span>Iniciada</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSetStatus(viewingTask, 'en_progreso')}
+                        className={`min-h-[46px] py-2.5 px-4 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition-all ${
+                          viewingTask.status === 'en_progreso'
+                            ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
+                            : 'bg-white text-amber-900 border-amber-200 hover:bg-amber-50'
+                        }`}
+                      >
+                        <span>En proceso</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSetStatus(viewingTask, 'completada')}
+                        className={`min-h-[46px] py-2.5 px-4 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition-all ${
+                          viewingTask.status === 'completada'
+                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                            : !canMarkTaskDone
+                            ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                            : 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50'
+                        }`}
+                        title={
+                          !canMarkTaskDone
+                            ? 'Solo el Administrador o usuarios con permiso pueden marcar como Hecha'
+                            : 'Marcar como Hecha'
+                        }
+                      >
+                        <span>{!canMarkTaskDone && viewingTask.status !== 'completada' ? '🔒 Hecha' : '✓ Hecha'}</span>
+                      </button>
+                    </div>
+                    {!canMarkTaskDone && (
+                      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2 flex items-center gap-2">
+                        <i className="fi fi-rr-lock text-xs text-amber-600" />
+                        <span>Solo el Administrador o usuarios con permiso pueden marcar la tarea como hecha.</span>
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Descripción y Notas en Tarjetas Amplias */}
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+                    <div>
+                      <label className="block text-xs font-bold text-[#3B82F6] uppercase tracking-wider mb-2">
+                        Descripción Detallada de la Actividad
+                      </label>
+                      <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] text-xs sm:text-sm whitespace-pre-wrap min-h-[90px]">
+                        {viewingTask.description || 'Sin descripción adicional registrada para esta actividad.'}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#3B82F6] uppercase tracking-wider mb-2">
+                        Notas Técnicas y Observaciones
+                      </label>
+                      <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] text-xs sm:text-sm whitespace-pre-wrap min-h-[90px]">
+                        {viewingTask.notes || 'Sin notas u observaciones adicionales registradas.'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Credenciales y Link Directo */}
+                  {(viewingTask.accessEmail || viewingTask.accessPassword || viewingTask.directLink) && (
+                    <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-3">
+                      <div className="text-xs font-bold text-[#0B2559] uppercase tracking-wider flex items-center gap-2">
+                        <i className="fi fi-rr-key text-[#3B82F6]" />
+                        <span>Credenciales y Enlace Directo</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {viewingTask.accessEmail && (
+                          <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] font-mono text-xs text-[#0B2559]">
+                            <span className="block text-[10px] font-sans font-bold text-[#3B82F6] uppercase mb-1">
+                              Usuario / Correo de Acceso
+                            </span>
+                            <strong>{viewingTask.accessEmail}</strong>
+                          </div>
+                        )}
+                        {viewingTask.accessPassword && (currentUser.role === 'admin' || currentUser.canViewVault) && (
+                          <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] font-mono text-xs text-[#0B2559]">
+                            <span className="block text-[10px] font-sans font-bold text-[#3B82F6] uppercase mb-1">
+                              Contraseña / Token
+                            </span>
+                            <strong>{viewingTask.accessPassword}</strong>
+                          </div>
+                        )}
+                      </div>
+                      {viewingTask.directLink && (
+                        <div className="pt-1">
+                          <a
+                            href={viewingTask.directLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0B2559] text-white font-bold text-xs hover:bg-[#15397A] transition-colors"
+                          >
+                            <span>Abrir Link Directo de la Actividad</span>
+                            <i className="fi fi-rr-arrow-up-right-from-square text-xs" />
+                          </a>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-                <div className="max-h-40 overflow-y-auto border border-[#B3D9FF] rounded-xl bg-white divide-y divide-[#F4F9FF]">
-                  <button
-                    type="button"
-                    onClick={() => toggleViewingAssignee('ABIERTA')}
-                    className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
-                      viewingAssignees.includes('ABIERTA')
-                        ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
-                        : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
-                    }`}
-                  >
-                    <span
-                      className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
-                        viewingAssignees.includes('ABIERTA')
-                          ? 'bg-[#0B2559] border-[#0B2559] text-white'
-                          : 'bg-white border-[#B3D9FF] text-transparent'
+
+                {/* Columna Lateral Derecha (4 columnas en PC) */}
+                <div className="lg:col-span-4 space-y-6">
+                  {/* Ficha de Metadatos */}
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+                    <h4 className="text-xs font-bold text-[#0B2559] uppercase tracking-wider border-b border-[#D6EAFF] pb-2.5">
+                      Ficha Técnica de la Actividad
+                    </h4>
+                    <div className="grid grid-cols-2 gap-3 text-xs tabular-nums">
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                        <span className="text-[#3B82F6] block text-[11px]">Importancia</span>
+                        <strong className="text-[#0B2559] capitalize mt-0.5 block text-sm">
+                          {viewingTask.priority}
+                        </strong>
+                      </div>
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                        <span className="text-[#3B82F6] block text-[11px]">Categoría / Área</span>
+                        <strong className="text-[#0B2559] mt-0.5 block text-sm truncate">
+                          {viewingTask.category || 'Operaciones'}
+                        </strong>
+                      </div>
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                        <span className="text-[#3B82F6] block text-[11px]">Fecha Límite</span>
+                        <strong className="text-[#0B2559] mt-0.5 block">
+                          {viewingTask.dueDate ? viewingTask.dueDate.split('T')[0] : 'Sin fecha'}
+                        </strong>
+                      </div>
+                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                        <span className="text-[#3B82F6] block text-[11px]">Creado Por</span>
+                        <strong className="text-[#0B2559] mt-0.5 block truncate">
+                          {viewingTask.createdByName || 'Sistema'}
+                        </strong>
+                      </div>
+                      <div className="col-span-2 p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                        <span className="text-[#3B82F6] block text-[11px]">Encargado Actual</span>
+                        <strong className="text-[#0B2559] mt-0.5 block text-sm">
+                          {viewingTask.assignedToCedula === 'ABIERTA'
+                            ? '🌐 Abierta (Cualquiera puede realizarla)'
+                            : viewingTask.assignedToName || 'No asignado'}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Selector de Encargado (Solo editable por Admin y Personal Autorizado) */}
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="block text-xs font-bold text-[#0B2559] uppercase tracking-wider">
+                        Encargado de la Actividad
+                      </label>
+                      {canEditActivity &&
+                        (viewingAssignees.length > 1 ||
+                          (viewingAssignees.length === 1 &&
+                            viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA'))) && (
+                          <button
+                            type="button"
+                            onClick={() => handleApplyViewingAssignees(viewingTask, viewingAssignees)}
+                            className="px-3 py-1.5 rounded-lg bg-[#0B2559] text-white text-xs font-bold hover:bg-[#15397A] transition-colors"
+                          >
+                            Guardar Encargado
+                          </button>
+                        )}
+                    </div>
+
+                    {!canEditActivity && (
+                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-900 flex items-center gap-2">
+                        <i className="fi fi-rr-lock text-amber-600 shrink-0" />
+                        <span>
+                          Después de crear una actividad, solo el Administrador y el personal autorizado pueden editarla o cambiar su encargado.
+                        </span>
+                      </div>
+                    )}
+
+                    <div
+                      className={`max-h-72 overflow-y-auto border border-[#B3D9FF] rounded-xl bg-white divide-y divide-[#F4F9FF] ${
+                        !canEditActivity ? 'opacity-70' : ''
                       }`}
                     >
-                      <i className="fi fi-rr-check text-[9px]" />
-                    </span>
-                    <span className="truncate">🌐 ABIERTA — Cualquiera puede realizarla</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => toggleViewingAssignee(currentUser.cedula)}
-                    className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
-                      viewingAssignees.includes(currentUser.cedula)
-                        ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
-                        : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
-                    }`}
-                  >
-                    <span
-                      className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
-                        viewingAssignees.includes(currentUser.cedula)
-                          ? 'bg-[#0B2559] border-[#0B2559] text-white'
-                          : 'bg-white border-[#B3D9FF] text-transparent'
-                      }`}
-                    >
-                      <i className="fi fi-rr-check text-[9px]" />
-                    </span>
-                    <span className="truncate">
-                      👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
-                    </span>
-                  </button>
-
-                  {users
-                    .filter(u => u.cedula !== currentUser.cedula)
-                    .map(u => {
-                      const isSelected = viewingAssignees.includes(u.cedula);
-                      return (
-                        <button
-                          key={u.cedula}
-                          type="button"
-                          onClick={() => toggleViewingAssignee(u.cedula)}
-                          className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
-                            isSelected
-                              ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
-                              : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                      <button
+                        type="button"
+                        disabled={!canEditActivity}
+                        onClick={() => toggleViewingAssignee('ABIERTA')}
+                        className={`w-full px-3.5 py-2.5 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                          viewingAssignees.includes('ABIERTA')
+                            ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                            : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                        } ${!canEditActivity ? 'cursor-not-allowed' : ''}`}
+                      >
+                        <span
+                          className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                            viewingAssignees.includes('ABIERTA')
+                              ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                              : 'bg-white border-[#B3D9FF] text-transparent'
                           }`}
                         >
-                          <span
-                            className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
-                              isSelected
-                                ? 'bg-[#0B2559] border-[#0B2559] text-white'
-                                : 'bg-white border-[#B3D9FF] text-transparent'
-                            }`}
-                          >
-                            <i className="fi fi-rr-check text-[9px]" />
-                          </span>
-                          <span className="truncate">
-                            👥 {u.name} (C.C. {u.cedula})
-                          </span>
-                        </button>
-                      );
-                    })}
+                          <i className="fi fi-rr-check text-[9px]" />
+                        </span>
+                        <span className="truncate">🌐 ABIERTA — Cualquiera puede realizarla</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={!canEditActivity}
+                        onClick={() => toggleViewingAssignee(currentUser.cedula)}
+                        className={`w-full px-3.5 py-2.5 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                          viewingAssignees.includes(currentUser.cedula)
+                            ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                            : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                        } ${!canEditActivity ? 'cursor-not-allowed' : ''}`}
+                      >
+                        <span
+                          className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                            viewingAssignees.includes(currentUser.cedula)
+                              ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                              : 'bg-white border-[#B3D9FF] text-transparent'
+                          }`}
+                        >
+                          <i className="fi fi-rr-check text-[9px]" />
+                        </span>
+                        <span className="truncate">
+                          👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
+                        </span>
+                      </button>
+
+                      {users
+                        .filter(u => u.cedula !== currentUser.cedula)
+                        .map(u => {
+                          const isSelected = viewingAssignees.includes(u.cedula);
+                          return (
+                            <button
+                              key={u.cedula}
+                              type="button"
+                              disabled={!canEditActivity}
+                              onClick={() => toggleViewingAssignee(u.cedula)}
+                              className={`w-full px-3.5 py-2.5 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                                isSelected
+                                  ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                                  : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                              } ${!canEditActivity ? 'cursor-not-allowed' : ''}`}
+                            >
+                              <span
+                                className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                                  isSelected
+                                    ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                                    : 'bg-white border-[#B3D9FF] text-transparent'
+                                }`}
+                              >
+                                <i className="fi fi-rr-check text-[9px]" />
+                              </span>
+                              <span className="truncate">
+                                👥 {u.name} (C.C. {u.cedula})
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              {/* Datos de la Tarea (Prioridad, Fechas, Responsable) */}
-              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 tabular-nums">
-                <div>
-                  <span className="text-slate-500">Nivel de Importancia:</span>
-                  <div className="font-bold text-[#0B2559] capitalize mt-0.5">
-                    {viewingTask.priority}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-slate-500">Fecha Límite:</span>
-                  <div className="font-bold text-[#0B2559] mt-0.5">
-                    {viewingTask.dueDate ? viewingTask.dueDate.split('T')[0] : 'Sin fecha'}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-slate-500">Encargado Actual:</span>
-                  <div className="font-bold text-[#0B2559] mt-0.5">
-                    {viewingTask.assignedToCedula === 'ABIERTA'
-                      ? '🌐 Abierta (Cualquiera)'
-                      : viewingTask.assignedToName || 'No asignado'}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-slate-500">Creado Por:</span>
-                  <div className="font-bold text-[#0B2559] mt-0.5">
-                    {viewingTask.createdByName || 'Sistema'}
-                  </div>
-                </div>
-              </div>
-
-              {/* Descripción o Notas (si existen) */}
-              {(viewingTask.description || viewingTask.notes) && (
-                <div className="space-y-2">
-                  {viewingTask.description && (
-                    <div>
-                      <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
-                        Descripción
-                      </label>
-                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] whitespace-pre-wrap">
-                        {viewingTask.description}
-                      </div>
-                    </div>
-                  )}
-                  {viewingTask.notes && (
-                    <div>
-                      <label className="block text-[11px] font-bold text-[#3B82F6] uppercase tracking-wider mb-1">
-                        Notas y Observaciones
-                      </label>
-                      <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-[#0B2559] whitespace-pre-wrap">
-                        {viewingTask.notes}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Credenciales y Link Directo (si existen) */}
-              {(viewingTask.accessEmail || viewingTask.accessPassword || viewingTask.directLink) && (
-                <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2">
-                  <div className="text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
-                    Credenciales y Enlace Directo
-                  </div>
-                  {viewingTask.accessEmail && (
-                    <div className="font-mono text-xs text-[#0B2559]">
-                      Usuario / Correo: <strong>{viewingTask.accessEmail}</strong>
-                    </div>
-                  )}
-                  {viewingTask.accessPassword && (currentUser.role === 'admin' || currentUser.canViewVault) && (
-                    <div className="font-mono text-xs text-[#0B2559]">
-                      Contraseña: <strong>{viewingTask.accessPassword}</strong>
-                    </div>
-                  )}
-                  {viewingTask.directLink && (
-                    <a
-                      href={viewingTask.directLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0B2559] text-white font-bold text-xs hover:bg-[#15397A] transition-colors"
-                    >
-                      <span>Abrir Link Directo</span>
-                      <i className="fi fi-rr-arrow-up-right-from-square text-[10px]" />
-                    </a>
-                  )}
-                </div>
-              )}
             </div>
+          </div>
 
-            {/* Pie del Visor */}
-            <div className="px-5 py-3 bg-[#F4F9FF] border-t border-[#D6EAFF] flex items-center justify-between gap-2">
-              {(currentUser.canDeleteTasks || currentUser.role === 'admin') ? (
+          {/* Pie de Pantalla Completa */}
+          <div className="px-4 sm:px-8 py-4 bg-white border-t border-[#D6EAFF] flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2">
+              {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
                 <button
                   type="button"
                   onClick={() => handleDelete(viewingTask)}
-                  className="min-h-[40px] px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl flex items-center gap-1.5 transition-colors"
+                  className="min-h-[42px] px-4 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl flex items-center gap-1.5 transition-colors"
                 >
                   <i className="fi fi-rr-trash text-xs" />
-                  <span>Eliminar Tarea</span>
+                  <span>Eliminar Actividad</span>
                 </button>
-              ) : (
-                <div />
               )}
-              <button
-                type="button"
-                onClick={async () => {
-                  if (
-                    viewingAssignees.length > 1 ||
-                    (viewingAssignees.length === 1 &&
-                      viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA'))
-                  ) {
-                    await handleApplyViewingAssignees(viewingTask, viewingAssignees);
-                  }
-                  setViewingTask(null);
-                }}
-                className="min-h-[40px] px-5 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-xl transition-colors"
-              >
-                Cerrar Vista
-              </button>
+              {canEditActivity && onEditTask && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = viewingTask;
+                    setViewingTask(null);
+                    onEditTask(target);
+                  }}
+                  className="min-h-[42px] px-4 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] hover:bg-[#99CCFF] rounded-xl flex items-center gap-1.5 transition-colors"
+                >
+                  <i className="fi fi-rr-edit text-xs" />
+                  <span>Editar todos los campos</span>
+                </button>
+              )}
             </div>
+
+            <button
+              type="button"
+              onClick={async () => {
+                if (
+                  canEditActivity &&
+                  (viewingAssignees.length > 1 ||
+                    (viewingAssignees.length === 1 &&
+                      viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA')))
+                ) {
+                  await handleApplyViewingAssignees(viewingTask, viewingAssignees);
+                }
+                setViewingTask(null);
+              }}
+              className="min-h-[42px] px-6 py-2.5 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-xl transition-colors"
+            >
+              Cerrar Vista en Pantalla Completa
+            </button>
           </div>
         </div>
       )}

@@ -490,3 +490,368 @@ export function exportUsersPersonalDataToExcel(params: {
   URL.revokeObjectURL(url);
 }
 
+export interface UserEvaluationMetric {
+  cedula: string;
+  name: string;
+  department: string;
+  role: string;
+  email: string;
+  totalTasks: number;
+  completedTasks: number;
+  inProgressTasks: number;
+  pendingTasks: number;
+  criticalTasks: number;
+  productivityScore: number;
+  avgEntryTime: string;
+  avgExitTime: string;
+  punctualityScore: number;
+  attendanceScore: number;
+  loginCount: number;
+  interestScore: number;
+  teamworkScore: number;
+  leadershipScore: number;
+  innovationScore: number;
+  communicationScore: number;
+  serviceQualityScore: number;
+  wellbeingScore: number;
+  auditActionsCount: number;
+  eventsCount: number;
+  overallPerformanceScore: number;
+  performanceLevel: 'Sobresaliente' | 'Alto Desempeño' | 'Satisfactorio' | 'En Seguimiento';
+  evaluationDate: string;
+  strengthsNote: string;
+  improvementPlan: string;
+}
+
+export function generateEvaluationMetricsPDF(params: {
+  generatedBy: AppUser;
+  metrics: UserEvaluationMetric[];
+  globalProductivity: number;
+  globalPunctuality: number;
+  globalInterest: number;
+  globalTeamwork?: number;
+  globalInnovation?: number;
+  globalWellbeing?: number;
+  globalPerformance: number;
+  avgEntryHourLabel: string;
+  evaluationPeriod?: string;
+  searchFilterSummary?: string;
+}) {
+  const {
+    generatedBy,
+    metrics,
+    globalProductivity,
+    globalPunctuality,
+    globalInterest,
+    globalTeamwork = 86,
+    globalInnovation = 84,
+    globalWellbeing = 88,
+    globalPerformance,
+    avgEntryHourLabel,
+    evaluationPeriod = new Date().toISOString().slice(0, 10),
+    searchFilterSummary = 'Todos los colaboradores',
+  } = params;
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const nowStr = new Date().toLocaleString('es-CO');
+
+  doc.setFontSize(15);
+  doc.setTextColor(11, 37, 89);
+  doc.text('INFORME INTEGRAL DE EVALUACIÓN MULTIDIMENSIONAL Y MÉTRICAS DE DESEMPEÑO — FUNDACIÓN ULEP', 14, 15);
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text(
+    `Emitido por: ${generatedBy.name} (C.C. ${generatedBy.cedula})  ·  Fecha Corte: ${evaluationPeriod}  ·  Generado: ${nowStr}  ·  Filtro: ${searchFilterSummary} (${metrics.length} registros)`,
+    14,
+    21
+  );
+
+  autoTable(doc, {
+    startY: 25,
+    head: [['Tipo de Evaluación Institucional', 'Resultado Global', 'Descripción y Criterio Evaluado']],
+    body: [
+      ['1. Productividad y Eficiencia Operativa', `${globalProductivity}%`, 'Cumplimiento de metas, entregas a tiempo, avance de tareas y resolución de prioridades'],
+      ['2. Tiempos de Entrada, Salida y Puntualidad', `${globalPunctuality}% (Entrada: ${avgEntryHourLabel})`, 'Horario de ingreso, asistencia continua y cumplimiento de jornada laboral'],
+      ['3. Evaluación de Interés y Compromiso Activo', `${globalInterest}%`, 'Iniciativa propia, sentido de pertenencia, participación en eventos y seguimiento'],
+      ['4. Competencias Blandas, Trabajo en Equipo y Liderazgo 360°', `${globalTeamwork}%`, 'Comunicación asertiva, colaboración interdepartamental, liderazgo y empatía'],
+      ['5. Innovación, Mejora Continua y Calidad de Servicio', `${globalInnovation}%`, 'Adaptabilidad tecnológica, propuestas de mejora y atención a la comunidad ULEP'],
+      ['6. Clima Laboral, Bienestar y Motivación', `${globalWellbeing}%`, 'Manejo de presión, motivación intrínseca, convivencia y proyección de crecimiento'],
+      ['7. Calificación Integral Ponderada de Desempeño', `${globalPerformance}%`, 'Promedio global de todas las dimensiones evaluadas en el período seleccionado'],
+    ],
+    theme: 'grid',
+    headStyles: { fillColor: [11, 37, 89], textColor: 255, fontSize: 8 },
+    bodyStyles: { fontSize: 7.5, textColor: [11, 37, 89] },
+  });
+
+  const afterSummaryY = (doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY || 78;
+
+  doc.setFontSize(10.5);
+  doc.setTextColor(11, 37, 89);
+  doc.text('Matriz Detallada de Resultados por Colaborador (Todas las Dimensiones de Evaluación)', 14, afterSummaryY + 7);
+
+  autoTable(doc, {
+    startY: afterSummaryY + 10,
+    head: [[
+      'Colaborador (Cédula)',
+      'Área',
+      'Fecha Eval.',
+      'Tareas',
+      'Productividad',
+      'Entrada / Salida',
+      'Puntualidad',
+      'Interés',
+      'Equipo / 360°',
+      'Innovación',
+      'Bienestar',
+      'Score Final',
+      'Nivel',
+    ]],
+    body: metrics.map(m => [
+      `${m.name} (${m.cedula})`,
+      m.department,
+      m.evaluationDate,
+      `${m.completedTasks}/${m.totalTasks}`,
+      `${m.productivityScore}%`,
+      `${m.avgEntryTime} - ${m.avgExitTime}`,
+      `${m.punctualityScore}%`,
+      `${m.interestScore}%`,
+      `${m.teamworkScore}%`,
+      `${m.innovationScore}%`,
+      `${m.wellbeingScore}%`,
+      `${m.overallPerformanceScore}%`,
+      m.performanceLevel.toUpperCase(),
+    ]),
+    theme: 'striped',
+    headStyles: { fillColor: [11, 37, 89], textColor: 255, fontSize: 7 },
+    bodyStyles: { fontSize: 7, textColor: [15, 23, 42] },
+  });
+
+  doc.save(`Informe_Evaluacion_Metricas_ULEP_${evaluationPeriod}.pdf`);
+}
+
+export function exportEvaluationMetricsToExcel(params: {
+  exportedBy: AppUser;
+  metrics: UserEvaluationMetric[];
+  globalProductivity: number;
+  globalPunctuality: number;
+  globalInterest: number;
+  globalTeamwork?: number;
+  globalInnovation?: number;
+  globalWellbeing?: number;
+  globalPerformance: number;
+  avgEntryHourLabel: string;
+  evaluationPeriod?: string;
+  searchFilterSummary?: string;
+}) {
+  const {
+    exportedBy,
+    metrics,
+    globalProductivity,
+    globalPunctuality,
+    globalInterest,
+    globalTeamwork = 86,
+    globalInnovation = 84,
+    globalWellbeing = 88,
+    globalPerformance,
+    avgEntryHourLabel,
+    evaluationPeriod = new Date().toISOString().slice(0, 10),
+    searchFilterSummary = 'Todos los colaboradores',
+  } = params;
+  const nowStr = new Date().toLocaleString('es-CO');
+
+  const rowsHtml = metrics
+    .map(
+      m => `<tr>
+        <td style="mso-number-format:'\\@'; font-weight:bold;">${escapeExcelHtml(m.cedula)}</td>
+        <td>${escapeExcelHtml(m.name)}</td>
+        <td>${escapeExcelHtml(m.department)}</td>
+        <td>${escapeExcelHtml(m.evaluationDate)}</td>
+        <td style="text-align:center;">${m.totalTasks}</td>
+        <td style="text-align:center;">${m.completedTasks}</td>
+        <td style="text-align:center; font-weight:bold;">${m.productivityScore}%</td>
+        <td style="text-align:center;">${escapeExcelHtml(m.avgEntryTime)}</td>
+        <td style="text-align:center;">${escapeExcelHtml(m.avgExitTime)}</td>
+        <td style="text-align:center;">${m.punctualityScore}%</td>
+        <td style="text-align:center;">${m.attendanceScore}%</td>
+        <td style="text-align:center; font-weight:bold;">${m.interestScore}%</td>
+        <td style="text-align:center;">${m.teamworkScore}%</td>
+        <td style="text-align:center;">${m.leadershipScore}%</td>
+        <td style="text-align:center;">${m.innovationScore}%</td>
+        <td style="text-align:center;">${m.communicationScore}%</td>
+        <td style="text-align:center;">${m.serviceQualityScore}%</td>
+        <td style="text-align:center;">${m.wellbeingScore}%</td>
+        <td style="text-align:center; font-weight:bold; background-color:#EAF3FF;">${m.overallPerformanceScore}%</td>
+        <td style="font-weight:bold;">${escapeExcelHtml(m.performanceLevel)}</td>
+        <td>${escapeExcelHtml(m.strengthsNote)}</td>
+        <td>${escapeExcelHtml(m.improvementPlan)}</td>
+      </tr>`
+    )
+    .join('\n');
+
+  const excelDocument = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      table { border-collapse: collapse; font-family: Roboto, Arial, sans-serif; font-size: 11px; }
+      th { background-color: #0B2559; color: #FFFFFF; font-weight: bold; border: 1px solid #B3D9FF; padding: 8px; text-align: left; }
+      td { border: 1px solid #CBD5E1; padding: 6px 8px; color: #0B2559; }
+      .title-row { background-color: #EAF3FF; color: #0B2559; font-size: 14px; font-weight: bold; padding: 10px; }
+      .summary-row { background-color: #F4F9FF; color: #0B2559; font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <table>
+      <tr>
+        <td colspan="22" class="title-row">
+          FUNDACIÓN ULEP — MATRIZ INTEGRAL DE EVALUACIÓN Y MÉTRICAS DE DESEMPEÑO (FECHA DE CORTE: ${escapeExcelHtml(evaluationPeriod)})
+        </td>
+      </tr>
+      <tr>
+        <td colspan="22">
+          Exportado por: ${escapeExcelHtml(exportedBy.name)} (C.C. ${escapeExcelHtml(exportedBy.cedula)}) · Generado: ${escapeExcelHtml(nowStr)} · Filtro aplicado: ${escapeExcelHtml(searchFilterSummary)} · Registros: ${metrics.length}
+        </td>
+      </tr>
+      <tr class="summary-row">
+        <td colspan="4">PROMEDIOS GLOBALES</td>
+        <td colspan="3">Productividad: ${globalProductivity}%</td>
+        <td colspan="4">Puntualidad: ${globalPunctuality}% (Entrada: ${escapeExcelHtml(avgEntryHourLabel)})</td>
+        <td colspan="2">Interés: ${globalInterest}%</td>
+        <td colspan="2">Equipo 360°: ${globalTeamwork}%</td>
+        <td colspan="3">Innovación y Servicio: ${globalInnovation}%</td>
+        <td colspan="2">Bienestar: ${globalWellbeing}%</td>
+        <td colspan="2">Desempeño Total: ${globalPerformance}%</td>
+      </tr>
+      <thead>
+        <tr>
+          <th>Cédula</th>
+          <th>Colaborador</th>
+          <th>Área / Departamento</th>
+          <th>Fecha de Evaluación</th>
+          <th>Tareas Totales</th>
+          <th>Tareas Completadas</th>
+          <th>Productividad (%)</th>
+          <th>Hora Entrada Prom.</th>
+          <th>Hora Salida Prom.</th>
+          <th>Puntualidad (%)</th>
+          <th>Asistencia (%)</th>
+          <th>Evaluación Interés (%)</th>
+          <th>Trabajo en Equipo 360° (%)</th>
+          <th>Liderazgo (%)</th>
+          <th>Innovación y Mejora (%)</th>
+          <th>Comunicación Asertiva (%)</th>
+          <th>Calidad de Servicio (%)</th>
+          <th>Clima y Bienestar (%)</th>
+          <th>Desempeño General (%)</th>
+          <th>Calificación</th>
+          <th>Fortalezas Destacadas</th>
+          <th>Plan de Mejoramiento y Compromisos</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+
+  const blob = new Blob(['\ufeff', excelDocument], {
+    type: 'application/vnd.ms-excel;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Metricas_Evaluacion_Desempeno_ULEP_${evaluationPeriod}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export function generateSingleUserEvaluationPDF(params: {
+  generatedBy: AppUser;
+  userMetric: UserEvaluationMetric;
+  evaluationPeriod: string;
+}) {
+  const { generatedBy, userMetric: m, evaluationPeriod } = params;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const nowStr = new Date().toLocaleString('es-CO');
+
+  doc.setFontSize(15);
+  doc.setTextColor(11, 37, 89);
+  doc.text('INFORME INDIVIDUAL DE EVALUACIÓN Y DESEMPEÑO — FUNDACIÓN ULEP', 14, 16);
+
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text(
+    `Colaborador: ${m.name} (C.C. ${m.cedula})  ·  Área: ${m.department}  ·  Fecha Evaluación: ${m.evaluationDate || evaluationPeriod}`,
+    14,
+    22
+  );
+  doc.text(
+    `Emitido por: ${generatedBy.name}  ·  Fecha de generación: ${nowStr}  ·  Calificación Global: ${m.overallPerformanceScore}% (${m.performanceLevel.toUpperCase()})`,
+    14,
+    27
+  );
+
+  autoTable(doc, {
+    startY: 32,
+    head: [['Dimensión / Tipo de Evaluación', 'Puntaje', 'Detalle Técnico y Evidencia']],
+    body: [
+      ['1. Productividad y Eficiencia Operativa', `${m.productivityScore}%`, `${m.completedTasks} tareas completadas de ${m.totalTasks} asignadas (${m.inProgressTasks} en curso)`],
+      ['2. Tiempos de Entrada, Salida y Puntualidad', `${m.punctualityScore}%`, `Entrada prom: ${m.avgEntryTime} · Salida prom: ${m.avgExitTime} · Asistencia: ${m.attendanceScore}%`],
+      ['3. Evaluación de Interés y Compromiso', `${m.interestScore}%`, `${m.auditActionsCount} interacciones en sistema y ${m.eventsCount} eventos registrados`],
+      ['4. Trabajo en Equipo y Competencias 360°', `${m.teamworkScore}%`, 'Colaboración interdepartamental, apoyo al equipo y sinergia operativa'],
+      ['5. Liderazgo y Toma de Decisiones', `${m.leadershipScore}%`, 'Autonomía en resolución de problemas y orientación a resultados'],
+      ['6. Innovación y Adaptabilidad Digital', `${m.innovationScore}%`, 'Uso eficiente de herramientas tecnológicas y mejora de procesos'],
+      ['7. Comunicación Asertiva y Atención', `${m.communicationScore}%`, 'Claridad en reportes, trato respetuoso y efectividad comunicativa'],
+      ['8. Calidad de Servicio e Impacto ULEP', `${m.serviceQualityScore}%`, 'Excelencia en entregables y compromiso social con la Fundación ULEP'],
+      ['9. Clima Laboral, Bienestar y Motivación', `${m.wellbeingScore}%`, 'Equilibrio laboral, manejo constructivo de retos y actitud positiva'],
+      ['CALIFICACIÓN INTEGRAL PONDERADA', `${m.overallPerformanceScore}%`, `Nivel alcanzado: ${m.performanceLevel.toUpperCase()}`],
+    ],
+    theme: 'grid',
+    headStyles: { fillColor: [11, 37, 89], textColor: 255, fontSize: 8.5 },
+    bodyStyles: { fontSize: 8, textColor: [15, 23, 42] },
+  });
+
+  const nextY = ((doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY || 135) + 8;
+
+  autoTable(doc, {
+    startY: nextY,
+    head: [['Concepto Cualitativo del Evaluador', 'Descripción Registrada']],
+    body: [
+      ['Fortalezas y Logros Destacados', m.strengthsNote || 'Cumplimiento constante de objetivos y disposición colaborativa.'],
+      ['Plan de Mejoramiento y Compromisos', m.improvementPlan || 'Mantener estándares de puntualidad y liderazgo en proyectos estratégicos.'],
+    ],
+    theme: 'striped',
+    headStyles: { fillColor: [30, 58, 138], textColor: 255, fontSize: 8.5 },
+    bodyStyles: { fontSize: 8, textColor: [15, 23, 42] },
+  });
+
+  doc.save(`Evaluacion_Individual_${m.cedula}_${m.name.replace(/\s+/g, '_')}.pdf`);
+}
+
+export function exportSingleUserEvaluationToExcel(params: {
+  exportedBy: AppUser;
+  userMetric: UserEvaluationMetric;
+  evaluationPeriod: string;
+}) {
+  const { exportedBy, userMetric: m, evaluationPeriod } = params;
+  exportEvaluationMetricsToExcel({
+    exportedBy,
+    metrics: [m],
+    globalProductivity: m.productivityScore,
+    globalPunctuality: m.punctualityScore,
+    globalInterest: m.interestScore,
+    globalTeamwork: m.teamworkScore,
+    globalInnovation: m.innovationScore,
+    globalWellbeing: m.wellbeingScore,
+    globalPerformance: m.overallPerformanceScore,
+    avgEntryHourLabel: m.avgEntryTime,
+    evaluationPeriod: m.evaluationDate || evaluationPeriod,
+    searchFilterSummary: `Informe Individual: ${m.name} (C.C. ${m.cedula})`,
+  });
+}
+
+
+

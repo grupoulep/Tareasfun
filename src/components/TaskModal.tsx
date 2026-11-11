@@ -37,8 +37,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [showPass, setShowPass] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeScreen, setActiveScreen] = useState<'main' | 'details' | 'vault'>('main');
-  const [expandAllFields, setExpandAllFields] = useState<boolean | undefined>(undefined);
+  const [activeScreen, setActiveScreen] = useState<'all' | 'main' | 'details' | 'vault'>('all');
+  const [expandAllFields, setExpandAllFields] = useState<boolean | undefined>(true);
 
   const DRAFT_STORAGE_KEY = 'ulep_new_task_draft_v1';
 
@@ -120,8 +120,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         setDirectLink('');
       }
     }
-    setActiveScreen('main');
-    setExpandAllFields(undefined);
+    setActiveScreen('all');
+    setExpandAllFields(true);
     // Solo se inicializa al abrir el modal o cambiar de tarea a editar; NUNCA se reinicia por actualizaciones en segundo plano
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialTask?.id]);
@@ -174,6 +174,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   if (!isOpen) return null;
 
   const canSeeVault = currentUser.role === 'admin' || currentUser.canViewVault;
+  const canMarkTaskDone =
+    currentUser.role === 'admin' || Boolean(currentUser.canCompleteTasks);
+  const canEditActivity =
+    currentUser.role === 'admin' || Boolean(currentUser.canEditTasks);
 
   const handleCopy = (val: string, label: string) => {
     navigator.clipboard.writeText(val);
@@ -182,6 +186,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   };
 
   const toggleUserAssignee = (targetCedula: string) => {
+    if (initialTask && !canEditActivity) return;
     if (targetCedula === 'ABIERTA') {
       setAssignedToCedulas(['ABIERTA']);
       return;
@@ -197,6 +202,9 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (initialTask && !canEditActivity) {
+      return;
+    }
     if (!title.trim()) {
       setActiveScreen('main');
       return;
@@ -206,7 +214,16 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       const effectiveCedulas =
         assignedToCedulas.length > 0 ? assignedToCedulas : [currentUser.cedula];
       const combinedDue = new Date(`${dueDate}T${dueTime || '17:00'}:00`).toISOString();
-      const computedProgress = status === 'completada' ? 100 : progress;
+      const effectiveStatus: TaskStatus =
+        status === 'completada' && !canMarkTaskDone && initialTask?.status !== 'completada'
+          ? 'en_progreso'
+          : status;
+      const computedProgress =
+        effectiveStatus === 'completada'
+          ? 100
+          : !canMarkTaskDone
+          ? Math.min(95, progress)
+          : progress;
       const nowIso = new Date().toISOString();
 
       const orderedCedulas =
@@ -234,7 +251,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           title: title.trim(),
           description: description.trim(),
           priority,
-          status,
+          status: effectiveStatus,
           progress: computedProgress,
           tags: tags.trim(),
           category: category.trim() || 'Operaciones',
@@ -247,7 +264,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           createdAt: i === 0 && initialTask?.createdAt ? initialTask.createdAt : nowIso,
           dueDate: combinedDue,
           completedAt:
-            status === 'completada'
+            effectiveStatus === 'completada'
               ? (i === 0 && initialTask?.completedAt) || nowIso
               : '',
           notes: notes.trim(),
@@ -285,15 +302,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           .join(', ');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0B2559]/70 sm:p-4 overflow-y-auto">
-      <div className="bg-white border-t-2 sm:border border-[#B3D9FF] rounded-t-3xl sm:rounded-2xl w-full max-w-3xl max-h-[94vh] sm:max-h-none flex flex-col overflow-hidden sm:my-8 shadow-xl">
-        {/* Barra de arrastre para Teléfono */}
-        <div className="sm:hidden pt-2 pb-1 bg-[#0B2559] flex justify-center">
-          <div className="w-10 h-1.5 rounded-full bg-[#B3D9FF]/50" />
-        </div>
-
-        {/* Cabecera del Modal */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white shrink-0">
+    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+      <div className="bg-white w-full h-full flex flex-col overflow-hidden">
+        {/* Cabecera en Toda la Pantalla */}
+        <div className="flex items-center justify-between px-4 sm:px-8 py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <img
               src={`${import.meta.env.BASE_URL}assets/aistudio/FUN_BLANCO_e68e4ad5`}
@@ -302,11 +314,18 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               referrerPolicy="no-referrer"
             />
             <div className="min-w-0">
-              <h2 className="text-sm sm:text-base font-bold text-white truncate">
-                {initialTask ? 'Editar Registro de Actividad / Tarea' : 'Nueva Actividad con Asignación y Credenciales'}
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm sm:text-lg font-bold text-white truncate">
+                  {initialTask ? 'Detalle y Edición de Actividad (Pantalla Completa)' : 'Crear Nueva Actividad (Pantalla Completa)'}
+                </h2>
+                <span className="text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-md bg-[#B3D9FF] text-[#0B2559]">
+                  Vista Pantalla Completa
+                </span>
+              </div>
               <p className="hidden sm:block text-xs text-[#B3D9FF] mt-0.5 tabular-nums truncate">
-                Haz clic en la frase principal de cada campo para desplegar su cuadro de llenado.
+                {initialTask && !canEditActivity
+                  ? 'Solo el Administrador y el personal autorizado pueden editar una actividad después de creada.'
+                  : 'Amplio espacio en toda la pantalla para gestionar datos, encargados, notas y credenciales.'}
               </p>
             </div>
           </div>
@@ -315,35 +334,37 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             <button
               type="button"
               onClick={() => setExpandAllFields(prev => !prev)}
-              className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-[11px] font-bold flex items-center gap-1.5 transition-colors"
+              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-[#B3D9FF] hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
               title="Desplegar o minimizar todos los campos"
             >
               <i className={`fi ${expandAllFields ? 'fi-rr-compress-alt' : 'fi-rr-expand-arrows-alt'} text-xs`} />
-              <span className="hidden sm:inline">{expandAllFields ? 'Minimizar' : 'Desplegar Todo'}</span>
+              <span className="hidden sm:inline">{expandAllFields ? 'Minimizar Campos' : 'Desplegar Todo'}</span>
             </button>
 
             <button
               type="button"
               onClick={onClose}
-              className="w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center text-[#B3D9FF] hover:text-white rounded-lg hover:bg-white/10 transition-colors shrink-0"
+              className="px-3.5 py-2 flex items-center gap-1.5 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] hover:bg-white rounded-xl transition-colors shrink-0"
             >
-              <i className="fi fi-rr-cross text-sm" />
+              <i className="fi fi-rr-cross-small text-base" />
+              <span>Cerrar</span>
             </button>
           </div>
         </div>
 
         {/* Barra de Pantallas del Modal */}
-        <div className="bg-[#F4F9FF] border-b border-[#D6EAFF] px-4 py-2 flex items-center gap-1.5 overflow-x-auto shrink-0">
+        <div className="bg-[#F4F9FF] border-b border-[#D6EAFF] px-4 sm:px-8 py-2.5 flex items-center gap-2 overflow-x-auto shrink-0">
           {[
-            { id: 'main' as const, label: 'Pantalla 1: Datos y Encargado', icon: 'fi-rr-list-check' },
-            { id: 'details' as const, label: 'Pantalla 2: Descripción y Notas', icon: 'fi-rr-document' },
-            { id: 'vault' as const, label: 'Pantalla 3: Claves y Link Directo', icon: 'fi-rr-key' },
+            { id: 'all' as const, label: 'Vista Completa (Todas las Secciones)', icon: 'fi-rr-apps' },
+            { id: 'main' as const, label: '1. Datos y Encargado', icon: 'fi-rr-list-check' },
+            { id: 'details' as const, label: '2. Descripción y Notas', icon: 'fi-rr-document' },
+            { id: 'vault' as const, label: '3. Claves y Link Directo', icon: 'fi-rr-key' },
           ].map(tab => (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActiveScreen(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-all ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-all ${
                 activeScreen === tab.id
                   ? 'bg-[#0B2559] text-white shadow-2xs'
                   : 'bg-white text-[#0B2559] border border-[#B3D9FF] hover:bg-[#EAF3FF]'
@@ -355,9 +376,19 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           ))}
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-3.5 overflow-y-auto flex-1 max-h-[78vh]">
-          {activeScreen === 'main' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#F4F9FF]/40">
+          <div className="max-w-7xl mx-auto w-full space-y-6">
+          {initialTask && !canEditActivity && (
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold flex items-center gap-2.5">
+              <i className="fi fi-rr-lock text-base text-amber-600 shrink-0" />
+              <span>
+                Esta actividad ya fue creada. Solo el Administrador y el personal autorizado pueden editarla.
+              </span>
+            </div>
+          )}
+
+          {(activeScreen === 'main' || activeScreen === 'all') && (
+            <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-6 shadow-2xs grid grid-cols-1 sm:grid-cols-2 gap-4">
               <CollapsibleField
                 label="Título de la Tarea o Entrega"
                 valuePreview={title}
@@ -511,6 +542,9 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                     value={status}
                     onChange={e => {
                       const val = e.target.value as TaskStatus;
+                      if (val === 'completada' && !canMarkTaskDone && initialTask?.status !== 'completada') {
+                        return;
+                      }
                       setStatus(val);
                       if (val === 'completada') setProgress(100);
                       else if (val === 'pendiente' && progress === 100) setProgress(0);
@@ -519,17 +553,29 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                   >
                     <option value="pendiente">Pendiente</option>
                     <option value="en_progreso">En Progreso</option>
-                    <option value="completada">Completada</option>
+                    <option
+                      value="completada"
+                      disabled={!canMarkTaskDone && initialTask?.status !== 'completada'}
+                    >
+                      {canMarkTaskDone || initialTask?.status === 'completada'
+                        ? 'Completada (Hecha)'
+                        : '🔒 Completada (Solo Admin / Con permiso)'}
+                    </option>
                   </select>
                   <div className="flex items-center gap-2">
                     <input
                       type="range"
                       min={0}
-                      max={100}
+                      max={canMarkTaskDone || initialTask?.status === 'completada' ? 100 : 95}
                       step={5}
                       value={status === 'completada' ? 100 : progress}
                       onChange={e => {
                         const val = Number(e.target.value);
+                        if (val === 100 && !canMarkTaskDone && initialTask?.status !== 'completada') {
+                          setProgress(95);
+                          setStatus('en_progreso');
+                          return;
+                        }
                         setProgress(val);
                         if (val === 100) setStatus('completada');
                         else if (val > 0) setStatus('en_progreso');
@@ -608,8 +654,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             </div>
           )}
 
-          {activeScreen === 'details' && (
-            <div className="space-y-2.5">
+          {(activeScreen === 'details' || activeScreen === 'all') && (
+            <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-6 shadow-2xs space-y-4">
               <CollapsibleField
                 label="Descripción de la Actividad"
                 valuePreview={description}
@@ -618,7 +664,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 icon="fi-rr-align-left"
               >
                 <textarea
-                  rows={3}
+                  rows={4}
                   value={description}
                   onChange={e => setDescription(e.target.value)}
                   placeholder="Detalla los objetivos y entregables requeridos..."
@@ -633,7 +679,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 icon="fi-rr-comment-alt"
               >
                 <textarea
-                  rows={3}
+                  rows={4}
                   value={notes}
                   onChange={e => setNotes(e.target.value)}
                   placeholder="Instrucciones paso a paso, advertencias o notas para el equipo..."
@@ -643,8 +689,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             </div>
           )}
 
-          {activeScreen === 'vault' && (
-            <div className="space-y-2.5">
+          {(activeScreen === 'vault' || activeScreen === 'all') && (
+            <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-6 shadow-2xs space-y-4">
               {!canSeeVault && (
                 <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
                   Tu perfil tiene restringida la visualización de claves por el Administrador.
@@ -755,48 +801,51 @@ export const TaskModal: React.FC<TaskModalProps> = ({
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[#D6EAFF]">
+          <div className="flex items-center justify-between gap-3 pt-4 border-t border-[#D6EAFF]">
             <div className="flex items-center gap-1.5">
-              {activeScreen !== 'main' && (
+              {activeScreen !== 'all' && activeScreen !== 'main' && (
                 <button
                   type="button"
                   onClick={() =>
                     setActiveScreen(prev => (prev === 'vault' ? 'details' : 'main'))
                   }
-                  className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF]"
+                  className="px-3.5 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#EAF3FF]"
                 >
                   ← Anterior
                 </button>
               )}
-              {activeScreen !== 'vault' && (
+              {activeScreen !== 'all' && activeScreen !== 'vault' && (
                 <button
                   type="button"
                   onClick={() =>
                     setActiveScreen(prev => (prev === 'main' ? 'details' : 'vault'))
                   }
-                  className="px-3 py-1.5 text-xs font-bold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF]"
+                  className="px-3.5 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#EAF3FF]"
                 >
                   Siguiente Pantalla →
                 </button>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg hover:bg-[#EAF3FF] transition-colors whitespace-nowrap shrink-0"
+                className="px-5 py-2.5 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#EAF3FF] transition-colors whitespace-nowrap shrink-0"
               >
-                Cancelar
+                Cerrar Vista
               </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-5 py-2 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-lg hover:bg-[#99CCFF] transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 shadow-2xs"
-              >
-                {saving ? 'Guardando...' : initialTask ? 'Guardar Cambios' : 'Registrar Tarea'}
-              </button>
+              {(!initialTask || canEditActivity) && (
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-6 py-2.5 text-xs font-bold text-white bg-[#0B2559] rounded-xl hover:bg-[#15397A] transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 shadow-xs"
+                >
+                  {saving ? 'Guardando...' : initialTask ? 'Guardar Cambios de Actividad' : 'Registrar Actividad'}
+                </button>
+              )}
             </div>
+          </div>
           </div>
         </form>
       </div>

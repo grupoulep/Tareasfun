@@ -107,7 +107,8 @@ export function syncCollectionToPermanentVault<T>(
   getKey: (item: T) => string
 ) {
   const vault = readPermanentVault();
-  const targetMap = { ...(vault[collectionType] as Record<string, T>) };
+  const targetMap: Record<string, T> =
+    collectionType === 'auditLogs' ? {} : { ...(vault[collectionType] as Record<string, T>) };
   for (const item of items) {
     const key = getKey(item);
     if (key) {
@@ -353,6 +354,122 @@ export async function writeUserEventPermission(cedula: string, allowed: boolean)
   }
 }
 
+export const USER_COMPLETE_TASK_PERMS_STORAGE_KEY = 'ulep_user_complete_task_permissions_v1';
+
+export function readUserCompleteTaskPermissions(): Record<string, boolean> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(USER_COMPLETE_TASK_PERMS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function writeUserCompleteTaskPermission(cedula: string, allowed: boolean) {
+  const cleanCed = String(cedula || '').trim();
+  if (!cleanCed) return;
+  const currentMap = readUserCompleteTaskPermissions();
+  const nextMap: Record<string, boolean> = {
+    ...currentMap,
+    [cleanCed]: cleanCed === SINGLE_ADMIN_CEDULA ? true : Boolean(allowed),
+  };
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(USER_COMPLETE_TASK_PERMS_STORAGE_KEY, JSON.stringify(nextMap));
+      window.dispatchEvent(new Event('ulep_complete_task_perms_updated'));
+    } catch {
+      // ignore
+    }
+  }
+  const vault = readPermanentVault();
+  if (vault.users[cleanCed]) {
+    vault.users[cleanCed] = {
+      ...vault.users[cleanCed],
+      canCompleteTasks: nextMap[cleanCed],
+    };
+    writePermanentVault(vault);
+  }
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', 'config_complete_task_permissions'),
+      {
+        title: 'Configuracion Permisos Tareas Hechas',
+        date: 'CONFIG_COMPLETE_TASK_PERMS',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(nextMap).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: 'CONFIG_COMPLETE_TASK_PERMS',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+}
+
+export const USER_EDIT_TASK_PERMS_STORAGE_KEY = 'ulep_user_edit_task_permissions_v1';
+
+export function readUserEditTaskPermissions(): Record<string, boolean> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(USER_EDIT_TASK_PERMS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function writeUserEditTaskPermission(cedula: string, allowed: boolean) {
+  const cleanCed = String(cedula || '').trim();
+  if (!cleanCed) return;
+  const currentMap = readUserEditTaskPermissions();
+  const nextMap: Record<string, boolean> = {
+    ...currentMap,
+    [cleanCed]: cleanCed === SINGLE_ADMIN_CEDULA ? true : Boolean(allowed),
+  };
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(USER_EDIT_TASK_PERMS_STORAGE_KEY, JSON.stringify(nextMap));
+      window.dispatchEvent(new Event('ulep_edit_task_perms_updated'));
+    } catch {
+      // ignore
+    }
+  }
+  const vault = readPermanentVault();
+  if (vault.users[cleanCed]) {
+    vault.users[cleanCed] = {
+      ...vault.users[cleanCed],
+      canEditTasks: nextMap[cleanCed],
+    };
+    writePermanentVault(vault);
+  }
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', 'config_edit_task_permissions'),
+      {
+        title: 'Configuracion Permisos Editar Actividades',
+        date: 'CONFIG_EDIT_TASK_PERMS',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(nextMap).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: 'CONFIG_EDIT_TASK_PERMS',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+}
+
 export function hydrateCalendarEvent(raw: CalendarEvent): CalendarEvent {
   let startTime = raw.startTime || '';
   let endTime = raw.endTime || '';
@@ -378,8 +495,21 @@ export function hydrateCalendarEvent(raw: CalendarEvent): CalendarEvent {
 export async function saveUserToFirestore(user: AppUser) {
   const cedulaId = cleanId(user.cedula);
   const path = `app_users/${cedulaId}`;
-  const payload = sanitizeUserPayload({ ...user, cedula: cedulaId });
   const isSingleAdmin = cedulaId === SINGLE_ADMIN_CEDULA;
+
+  const editTaskPerms = readUserEditTaskPermissions();
+  const canEditTasksVal = isSingleAdmin
+    ? true
+    : user.canEditTasks !== undefined
+    ? Boolean(user.canEditTasks)
+    : Boolean(editTaskPerms[cedulaId]);
+
+  const payload = sanitizeUserPayload({
+    ...user,
+    cedula: cedulaId,
+    canEditTasks: canEditTasksVal,
+  });
+
   const eventPerms = readUserEventPermissions();
   const canCreateEventsVal = isSingleAdmin
     ? true
@@ -387,13 +517,33 @@ export async function saveUserToFirestore(user: AppUser) {
     ? Boolean(user.canCreateEvents)
     : Boolean(eventPerms[cedulaId]);
 
+  const completeTaskPerms = readUserCompleteTaskPermissions();
+  const canCompleteTasksVal = isSingleAdmin
+    ? true
+    : user.canCompleteTasks !== undefined
+    ? Boolean(user.canCompleteTasks)
+    : Boolean(completeTaskPerms[cedulaId]);
+
   const vault = readPermanentVault();
-  vault.users[cedulaId] = { ...payload, canCreateEvents: canCreateEventsVal };
+  vault.users[cedulaId] = {
+    ...payload,
+    canEditTasks: canEditTasksVal,
+    canCreateEvents: canCreateEventsVal,
+    canCompleteTasks: canCompleteTasksVal,
+  };
   vault.deletedUserCedulas = vault.deletedUserCedulas.filter(c => c !== cedulaId);
   writePermanentVault(vault);
 
+  if (user.canEditTasks !== undefined || isSingleAdmin) {
+    void writeUserEditTaskPermission(cedulaId, canEditTasksVal);
+  }
+
   if (user.canCreateEvents !== undefined || isSingleAdmin) {
     void writeUserEventPermission(cedulaId, canCreateEventsVal);
+  }
+
+  if (user.canCompleteTasks !== undefined || isSingleAdmin) {
+    void writeUserCompleteTaskPermission(cedulaId, canCompleteTasksVal);
   }
 
   try {
@@ -550,6 +700,29 @@ export async function deleteCalendarEventFromFirestore(eventId: string) {
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
+}
+
+export async function clearAllAuditLogsFromFirestore(logsToDelete: AuditLog[]) {
+  const vault = readPermanentVault();
+  vault.auditLogs = {};
+  writePermanentVault(vault);
+
+  const snap = await getDocs(query(collection(db, 'audit_logs'), limit(500)));
+  const idsToDelete = new Set<string>(logsToDelete.map(l => l.id).filter(Boolean));
+  snap.docs.forEach(d => {
+    if (d.id) idsToDelete.add(d.id);
+  });
+
+  await Promise.all(
+    Array.from(idsToDelete).map(async id => {
+      const path = `audit_logs/${id}`;
+      try {
+        await deleteDoc(doc(db, 'audit_logs', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, path);
+      }
+    })
+  );
 }
 
 /**

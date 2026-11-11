@@ -520,6 +520,171 @@ async function startServer() {
     });
   });
 
+  // Verificación de doble correo para eliminación total del registro de auditoría
+  let auditDeleteVerificationState: {
+    code1: string;
+    code2: string;
+    step1Verified: boolean;
+    step2Verified: boolean;
+    expiresAt: number;
+  } | null = null;
+
+  app.post('/api/resend/audit-delete/send-code-1', async (_req, res) => {
+    try {
+      const code1 = String(Math.floor(100000 + Math.random() * 900000));
+      const targetEmail1 = 'fundacionulep@gmail.com';
+
+      auditDeleteVerificationState = {
+        code1,
+        code2: '',
+        step1Verified: false,
+        step2Verified: false,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      };
+
+      const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+      const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
+      let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
+
+      if (resendApiKey) {
+        const emailHtml = `
+          <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+            <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+              <h2 style="margin: 0; font-size: 16px;">Autorización de Eliminación de Auditoría (Paso 1/2) — Fundación ULEP</h2>
+            </div>
+            <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
+              <p style="font-size: 14px; margin-top: 0;">Código de verificación enviado a <strong>${targetEmail1}</strong> para autorizar la eliminación del registro de auditoría:</p>
+              <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
+                ${code1}
+              </div>
+              <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
+            </div>
+          </div>
+        `;
+
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromEmail,
+            to: [targetEmail1],
+            subject: `Código de Autorización (Paso 1/2) Eliminación de Auditoría: ${code1}`,
+            text: `Código de autorización (Paso 1/2) para eliminar el registro de auditoría (${targetEmail1}): ${code1}`,
+            html: emailHtml,
+          }),
+        });
+
+        emailStatus = response.ok ? 'sent' : 'error';
+      }
+
+      return res.json({
+        ok: true,
+        status: emailStatus,
+        recipient: targetEmail1,
+      });
+    } catch (error: unknown) {
+      return res.status(500).json({
+        error: error instanceof Error ? error.message : 'No se pudo enviar el primer código de verificación.',
+      });
+    }
+  });
+
+  app.post('/api/resend/audit-delete/verify-code-1', async (req, res) => {
+    try {
+      const code = String(req.body?.code || '').trim();
+      if (
+        !auditDeleteVerificationState ||
+        Date.now() > auditDeleteVerificationState.expiresAt ||
+        auditDeleteVerificationState.code1 !== code
+      ) {
+        return res.status(400).json({
+          valid: false,
+          error: 'El código ingresado para fundacionulep@gmail.com no coincide o ha expirado.',
+        });
+      }
+
+      const code2 = String(Math.floor(100000 + Math.random() * 900000));
+      const targetEmail2 = 'jslopezren@gmail.com';
+
+      auditDeleteVerificationState.step1Verified = true;
+      auditDeleteVerificationState.code2 = code2;
+      auditDeleteVerificationState.expiresAt = Date.now() + 15 * 60 * 1000;
+
+      const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+      const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
+      let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
+
+      if (resendApiKey) {
+        const emailHtml = `
+          <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+            <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+              <h2 style="margin: 0; font-size: 16px;">Autorización de Eliminación de Auditoría (Paso 2/2) — Fundación ULEP</h2>
+            </div>
+            <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
+              <p style="font-size: 14px; margin-top: 0;">Segundo código de verificación enviado a <strong>${targetEmail2}</strong> para autorizar la eliminación del registro de auditoría:</p>
+              <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
+                ${code2}
+              </div>
+              <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
+            </div>
+          </div>
+        `;
+
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromEmail,
+            to: [targetEmail2],
+            subject: `Código de Autorización (Paso 2/2) Eliminación de Auditoría: ${code2}`,
+            text: `Código de autorización (Paso 2/2) para eliminar el registro de auditoría (${targetEmail2}): ${code2}`,
+            html: emailHtml,
+          }),
+        });
+
+        emailStatus = response.ok ? 'sent' : 'error';
+      }
+
+      return res.json({
+        ok: true,
+        valid: true,
+        status: emailStatus,
+        nextRecipient: targetEmail2,
+      });
+    } catch (error: unknown) {
+      return res.status(500).json({
+        error: error instanceof Error ? error.message : 'Error al verificar el primer código y enviar el segundo.',
+      });
+    }
+  });
+
+  app.post('/api/resend/audit-delete/verify-code-2', (req, res) => {
+    const code = String(req.body?.code || '').trim();
+    if (
+      !auditDeleteVerificationState ||
+      !auditDeleteVerificationState.step1Verified ||
+      Date.now() > auditDeleteVerificationState.expiresAt ||
+      auditDeleteVerificationState.code2 !== code
+    ) {
+      return res.status(400).json({
+        valid: false,
+        error: 'El código ingresado para jslopezren@gmail.com no coincide exactamente o ha expirado.',
+      });
+    }
+
+    auditDeleteVerificationState.step2Verified = true;
+    return res.json({
+      ok: true,
+      valid: true,
+    });
+  });
+
   app.post('/api/resend/check-and-notify', async (req, res) => {
     try {
       const incomingTasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
