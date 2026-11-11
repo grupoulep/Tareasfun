@@ -13,6 +13,7 @@ export interface AppUser {
   canSendChat: boolean;
   canViewVault: boolean;
   canExportReports: boolean;
+  canCreateEvents?: boolean;
   approvalStatus?: 'aprobado' | 'pendiente' | 'rechazado';
   // Datos personales de la cédula, ubicación, residencia, familiares y bancarios (visibles solo por Admin)
   cedulaIssuePlace?: string;
@@ -93,6 +94,9 @@ export interface CalendarEvent {
   title: string;
   date: string;
   time: string;
+  startTime?: string;
+  endTime?: string;
+  emoji?: string;
   type: 'entrega' | 'reunion' | 'auditoria' | 'hito' | 'actividad';
   description: string;
   createdByCedula: string;

@@ -1,16 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { AppUser, TaskItem, TaskPriority, TaskStatus } from '../types';
+import { AppUser, TaskItem, TaskPriority, TaskStatus, CalendarEvent } from '../types';
 import {
   saveTaskToFirestore,
   deleteTaskFromFirestore,
+  saveCalendarEventToFirestore,
+  deleteCalendarEventFromFirestore,
+  saveUserToFirestore,
+  hydrateCalendarEvent,
   recordAuditLog,
   cleanId
 } from '../firebase';
+import { SINGLE_ADMIN_CEDULA } from '../constants';
+
+const EVENT_EMOJI_OPTIONS = [
+  '📅', '🎉', '📌', '🤝', '🚀', '📊', '🏆', '💡', '🔔', '⭐',
+  '📝', '💻', '📞', '🎯', '✅', '🎂', '📣', '🏥', '📚', '⚡',
+];
+
+const MONTH_NAMES_ES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
 
 interface UserViewsProps {
+  activeSection?: string;
   currentUser: AppUser;
   users?: AppUser[];
   tasks: TaskItem[];
+  calendarEvents?: CalendarEvent[];
   onOpenNewTask: () => void;
   deviceMode?: 'mobile' | 'tablet' | 'pc';
   [key: string]: any;
@@ -144,13 +161,26 @@ const CircularProgressRing: React.FC<CircularProgressRingProps> = ({
 };
 
 export const UserViews: React.FC<UserViewsProps> = ({
+  activeSection = 'user_personal',
   currentUser,
   users = [],
   tasks,
+  calendarEvents = [],
   onOpenNewTask,
   deviceMode = 'pc',
 }) => {
   const isMobile = deviceMode === 'mobile';
+
+  // Estados para la sección Eventos (Calendario del mes actual)
+  const [calendarDate, setCalendarDate] = useState<Date>(() => new Date());
+  const [isAddEventModalOpen, setIsAddEventModalOpen] = useState(false);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventDate, setEventDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [eventStartTime, setEventStartTime] = useState('08:00');
+  const [eventEndTime, setEventEndTime] = useState('09:00');
+  const [eventEmoji, setEventEmoji] = useState('📅');
+  const [eventFormError, setEventFormError] = useState<string | null>(null);
+  const [showAdminEventPermsPanel, setShowAdminEventPermsPanel] = useState(false);
 
   // Inputs rápidos por sección
   const [quickInputs, setQuickInputs] = useState<Record<TaskPriority, string>>({
@@ -489,6 +519,549 @@ export const UserViews: React.FC<UserViewsProps> = ({
     (selectedPriorityTab !== 'todas' ? 1 : 0) +
     (statusFilter !== 'todos' ? 1 : 0) +
     (!showCompleted ? 1 : 0);
+
+  const canUserAddEvents =
+    currentUser.role === 'admin' ||
+    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+    Boolean(currentUser.canCreateEvents);
+
+  const openAddEventForDate = (isoDate?: string) => {
+    if (!canUserAddEvents) return;
+    const defaultDate = isoDate || new Date().toISOString().split('T')[0];
+    setEventTitle('');
+    setEventDate(defaultDate);
+    setEventStartTime('08:00');
+    setEventEndTime('09:00');
+    setEventEmoji('📅');
+    setEventFormError(null);
+    setIsAddEventModalOpen(true);
+  };
+
+  const handleCreateCalendarEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canUserAddEvents) return;
+    if (!eventTitle.trim()) {
+      setEventFormError('Ingresa el nombre del evento.');
+      return;
+    }
+    if (!eventDate) {
+      setEventFormError('Selecciona la fecha del evento.');
+      return;
+    }
+    if (!eventStartTime || !eventEndTime) {
+      setEventFormError('Ingresa la hora de inicio y la hora final.');
+      return;
+    }
+
+    const newEv: CalendarEvent = {
+      id: cleanId(`ev_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`),
+      title: eventTitle.trim(),
+      date: eventDate,
+      time: `${eventStartTime} - ${eventEndTime}`,
+      startTime: eventStartTime,
+      endTime: eventEndTime,
+      emoji: eventEmoji.trim() || '📅',
+      type: 'actividad',
+      description: eventEmoji.trim() || '📅',
+      createdByCedula: currentUser.cedula,
+      createdByName: currentUser.name,
+      linkedTaskId: '',
+    };
+
+    await saveCalendarEventToFirestore(newEv);
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'CREAR_EVENTO_CALENDARIO',
+      module: 'EVENTOS_CALENDARIO',
+      description: `Agregó el evento ${newEv.emoji} "${newEv.title}" para el ${newEv.date} (${newEv.startTime} - ${newEv.endTime}).`,
+      targetId: newEv.id,
+      severity: 'info',
+    });
+
+    setIsAddEventModalOpen(false);
+    setEventTitle('');
+  };
+
+  const handleDeleteCalendarEvent = async (ev: CalendarEvent) => {
+    if (
+      currentUser.role !== 'admin' &&
+      currentUser.cedula !== SINGLE_ADMIN_CEDULA &&
+      ev.createdByCedula !== currentUser.cedula
+    ) {
+      return;
+    }
+    await deleteCalendarEventFromFirestore(ev.id);
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'ELIMINAR_EVENTO_CALENDARIO',
+      module: 'EVENTOS_CALENDARIO',
+      description: `Eliminó el evento "${ev.title}" del ${ev.date}.`,
+      targetId: ev.id,
+      severity: 'warning',
+    });
+  };
+
+  const handleToggleUserEventPermInCalendar = async (targetUser: AppUser) => {
+    if (currentUser.role !== 'admin' && currentUser.cedula !== SINGLE_ADMIN_CEDULA) return;
+    if (targetUser.cedula === SINGLE_ADMIN_CEDULA) return;
+    const nextVal = !targetUser.canCreateEvents;
+    await saveUserToFirestore({
+      ...targetUser,
+      canCreateEvents: nextVal,
+    });
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: nextVal ? 'ACTIVAR_AGREGAR_EVENTO' : 'DESACTIVAR_AGREGAR_EVENTO',
+      module: 'EVENTOS_CALENDARIO',
+      description: `${nextVal ? 'Activó' : 'Desactivó'} la función de Agregar Evento para ${targetUser.name} (C.C. ${targetUser.cedula}).`,
+      targetId: targetUser.cedula,
+      severity: 'info',
+    });
+  };
+
+  if (activeSection === 'user_calendar') {
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const todayIso = new Date().toISOString().split('T')[0];
+
+    const firstDayOfMonth = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    // Lunes = 0 ... Domingo = 6
+    const startWeekday = (firstDayOfMonth.getDay() + 6) % 7;
+
+    const validEvents = calendarEvents
+      .filter(
+        ev =>
+          ev.id !== 'config_event_permissions' &&
+          ev.date !== 'CONFIG_PERMS' &&
+          !ev.id.startsWith('ev_sync_')
+      )
+      .map(hydrateCalendarEvent);
+
+    const monthEvents = validEvents
+      .filter(ev => ev.date.startsWith(monthPrefix))
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date.localeCompare(b.date);
+        return (a.startTime || a.time).localeCompare(b.startTime || b.time);
+      });
+
+    const calendarCells: { day: number | null; isoDate: string }[] = [];
+    for (let i = 0; i < startWeekday; i++) {
+      calendarCells.push({ day: null, isoDate: `empty-start-${i}` });
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = `${monthPrefix}-${String(d).padStart(2, '0')}`;
+      calendarCells.push({ day: d, isoDate: iso });
+    }
+
+    return (
+      <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>
+        {/* Cabecera del Calendario de Eventos del Mes */}
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 shadow-2xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="w-10 h-10 rounded-xl bg-[#0B2559] text-white flex items-center justify-center shrink-0 shadow-xs">
+                <i className="fi fi-rr-calendar text-base text-[#B3D9FF]" />
+              </span>
+              <div>
+                <h2 className="text-base sm:text-lg font-extrabold text-[#0B2559] flex items-center gap-2">
+                  <span>Eventos · {MONTH_NAMES_ES[month]} {year}</span>
+                  <span className="text-xs font-mono px-2 py-0.5 rounded-lg bg-[#EAF3FF] text-[#0B2559] border border-[#B3D9FF]">
+                    {monthEvents.length} en este mes
+                  </span>
+                </h2>
+                <p className="text-xs text-[#3B82F6]">
+                  Calendario mensual de actividades y eventos programados
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={() => setCalendarDate(new Date(year, month - 1, 1))}
+                  className="px-2.5 py-1.5 text-xs font-bold text-[#0B2559] hover:bg-[#B3D9FF]/50 rounded-lg transition-colors"
+                  title="Mes anterior"
+                >
+                  <i className="fi fi-rr-angle-left text-xs" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarDate(new Date())}
+                  className="px-3 py-1.5 text-xs font-bold text-[#0B2559] hover:bg-[#B3D9FF]/50 rounded-lg transition-colors"
+                >
+                  Mes Actual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarDate(new Date(year, month + 1, 1))}
+                  className="px-2.5 py-1.5 text-xs font-bold text-[#0B2559] hover:bg-[#B3D9FF]/50 rounded-lg transition-colors"
+                  title="Mes siguiente"
+                >
+                  <i className="fi fi-rr-angle-right text-xs" />
+                </button>
+              </div>
+
+              {(currentUser.role === 'admin' || currentUser.cedula === SINGLE_ADMIN_CEDULA) && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdminEventPermsPanel(prev => !prev)}
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-bold text-[#0B2559] bg-[#EAF3FF] hover:bg-[#B3D9FF] border border-[#B3D9FF] flex items-center gap-1.5 transition-colors"
+                >
+                  <i className="fi fi-rr-user-gear text-xs" />
+                  <span>Permisos Usuarios</span>
+                </button>
+              )}
+
+              {canUserAddEvents && (
+                <button
+                  type="button"
+                  onClick={() => openAddEventForDate()}
+                  className="min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] flex items-center gap-2 transition-colors shadow-xs"
+                >
+                  <i className="fi fi-rr-calendar-plus text-xs text-[#B3D9FF]" />
+                  <span>+ Agregar Evento</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Panel rápido exclusivo para Admin para activar/desactivar Agregar Evento a cada usuario */}
+          {(currentUser.role === 'admin' || currentUser.cedula === SINGLE_ADMIN_CEDULA) &&
+            showAdminEventPermsPanel && (
+              <div className="pt-3 border-t border-[#D6EAFF] space-y-2">
+                <div className="text-xs font-bold text-[#0B2559] flex items-center justify-between">
+                  <span>Activar función "Agregar Evento" por usuario:</span>
+                  <span className="text-[11px] text-[#3B82F6] font-normal">
+                    Haz clic en un usuario para habilitar o deshabilitar el botón de agregar evento
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {users
+                    .filter(u => u.cedula !== SINGLE_ADMIN_CEDULA)
+                    .map(u => {
+                      const active = Boolean(u.canCreateEvents);
+                      return (
+                        <button
+                          key={u.cedula}
+                          type="button"
+                          onClick={() => handleToggleUserEventPermInCalendar(u)}
+                          className={`p-2.5 rounded-xl border text-left text-xs flex items-center justify-between gap-2 transition-colors ${
+                            active
+                              ? 'bg-emerald-50 border-emerald-300 text-[#0B2559]'
+                              : 'bg-[#F4F9FF] border-[#B3D9FF] text-[#0B2559]/80'
+                          }`}
+                        >
+                          <div className="truncate">
+                            <div className="font-bold truncate">{u.name}</div>
+                            <div className="text-[10px] font-mono text-[#3B82F6]">C.C. {u.cedula}</div>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold shrink-0 ${
+                              active ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {active ? 'Activo' : 'Inactivo'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+        </div>
+
+        {/* Cuadrícula del Calendario del Mes */}
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl overflow-hidden shadow-2xs">
+          <div className="grid grid-cols-7 bg-[#0B2559] text-white text-center py-2.5 text-[11px] font-bold uppercase tracking-wider">
+            <div>Lun</div>
+            <div>Mar</div>
+            <div>Mié</div>
+            <div>Jue</div>
+            <div>Vie</div>
+            <div>Sáb</div>
+            <div>Dom</div>
+          </div>
+
+          <div className="grid grid-cols-7 divide-x divide-y divide-[#D6EAFF] border-t border-[#D6EAFF]">
+            {calendarCells.map(cell => {
+              if (cell.day === null) {
+                return (
+                  <div
+                    key={cell.isoDate}
+                    className="min-h-[84px] sm:min-h-[112px] bg-[#F4F9FF]/50 p-1.5"
+                  />
+                );
+              }
+
+              const dayEvents = monthEvents.filter(ev => ev.date === cell.isoDate);
+              const isToday = cell.isoDate === todayIso;
+
+              return (
+                <div
+                  key={cell.isoDate}
+                  onClick={() => {
+                    if (canUserAddEvents) {
+                      openAddEventForDate(cell.isoDate);
+                    }
+                  }}
+                  className={`min-h-[84px] sm:min-h-[112px] p-1.5 sm:p-2 flex flex-col justify-between transition-colors ${
+                    isToday ? 'bg-[#EAF3FF]/70' : 'bg-white hover:bg-[#F4F9FF]'
+                  } ${canUserAddEvents ? 'cursor-pointer' : ''}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center ${
+                        isToday
+                          ? 'bg-[#0B2559] text-white'
+                          : 'text-[#0B2559]'
+                      }`}
+                    >
+                      {cell.day}
+                    </span>
+                    {dayEvents.length > 0 && (
+                      <span className="text-[10px] font-mono font-bold text-[#3B82F6]">
+                        {dayEvents.length}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-1 space-y-1 overflow-y-auto max-h-20">
+                    {dayEvents.map(ev => (
+                      <div
+                        key={ev.id}
+                        onClick={e => e.stopPropagation()}
+                        className="px-1.5 py-1 rounded-lg bg-[#EAF3FF] border border-[#B3D9FF] text-[#0B2559] text-[10px] leading-tight"
+                        title={`${ev.emoji || '📅'} ${ev.title} (${ev.startTime} - ${ev.endTime})`}
+                      >
+                        <div className="font-bold truncate flex items-center gap-1">
+                          <span>{ev.emoji || '📅'}</span>
+                          <span className="truncate">{ev.title}</span>
+                        </div>
+                        <div className="font-mono text-[9px] text-[#3B82F6] truncate">
+                          {ev.startTime} - {ev.endTime}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Lista detallada de Eventos del Mes Actual */}
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 shadow-2xs space-y-3">
+          <div className="flex items-center justify-between border-b border-[#D6EAFF] pb-2.5">
+            <h3 className="text-sm font-bold text-[#0B2559] flex items-center gap-2">
+              <i className="fi fi-rr-calendar-check text-xs text-[#3B82F6]" />
+              <span>Eventos de {MONTH_NAMES_ES[month]} {year} ({monthEvents.length})</span>
+            </h3>
+            {canUserAddEvents && (
+              <button
+                type="button"
+                onClick={() => openAddEventForDate()}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold text-[#0B2559] bg-[#B3D9FF] hover:bg-[#99CCFF] transition-colors flex items-center gap-1.5"
+              >
+                <i className="fi fi-rr-plus text-[10px]" />
+                <span>Agregar Evento</span>
+              </button>
+            )}
+          </div>
+
+          {monthEvents.length === 0 ? (
+            <div className="py-8 text-center text-xs text-[#3B82F6] bg-[#F4F9FF] rounded-xl border border-[#D6EAFF]">
+              No hay eventos registrados en {MONTH_NAMES_ES[month]} {year}.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {monthEvents.map(ev => (
+                <div
+                  key={ev.id}
+                  className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-white border border-[#B3D9FF] flex items-center justify-center text-lg shrink-0 shadow-2xs">
+                      {ev.emoji || '📅'}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-[#0B2559] truncate">
+                        {ev.title}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-[#3B82F6] mt-0.5">
+                        <span>Fecha: {ev.date}</span>
+                        <span>·</span>
+                        <span className="font-bold text-[#0B2559]">
+                          {ev.startTime} - {ev.endTime}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-[#0B2559]/70 truncate">
+                        Por: {ev.createdByName}
+                      </div>
+                    </div>
+                  </div>
+
+                  {(currentUser.role === 'admin' ||
+                    currentUser.cedula === SINGLE_ADMIN_CEDULA ||
+                    ev.createdByCedula === currentUser.cedula) && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCalendarEvent(ev)}
+                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors shrink-0"
+                      title="Eliminar evento"
+                    >
+                      <i className="fi fi-rr-trash text-xs" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Modal para Agregar Evento */}
+        {isAddEventModalOpen && canUserAddEvents && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-[#0B2559]/60 backdrop-blur-xs">
+            <div className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-2xl shadow-xl border border-[#B3D9FF] overflow-hidden">
+              <div className="px-5 py-3.5 bg-[#0B2559] text-white flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <i className="fi fi-rr-calendar-plus text-sm text-[#B3D9FF]" />
+                  <h3 className="text-sm font-bold">Agregar Evento</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAddEventModalOpen(false)}
+                  className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+                >
+                  <i className="fi fi-rr-cross-small text-base" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateCalendarEvent} className="p-5 space-y-4 text-xs">
+                <div>
+                  <label className="block font-bold text-[#0B2559] mb-1">
+                    Nombre del Evento
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={eventTitle}
+                    onChange={e => setEventTitle(e.target.value)}
+                    placeholder="Ej. Reunión mensual de seguimiento"
+                    className="w-full min-h-[42px] px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-[#0B2559] mb-1">
+                    Fecha del Evento
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={eventDate}
+                    onChange={e => setEventDate(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-[#0B2559] mb-1">
+                      Hora de Inicio
+                    </label>
+                    <input
+                      type="time"
+                      required
+                      value={eventStartTime}
+                      onChange={e => setEventStartTime(e.target.value)}
+                      className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-[#0B2559] mb-1">
+                      Hora Final
+                    </label>
+                    <input
+                      type="time"
+                      required
+                      value={eventEndTime}
+                      onChange={e => setEventEndTime(e.target.value)}
+                      className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-[#0B2559] mb-1.5">
+                    Emoji del Evento
+                  </label>
+                  <div className="flex items-center gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={eventEmoji}
+                      onChange={e => setEventEmoji(e.target.value)}
+                      maxLength={8}
+                      className="w-16 min-h-[42px] text-center text-lg bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                    <span className="text-[11px] text-[#3B82F6]">
+                      Selecciona un emoji o escríbelo directamente
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-10 gap-1.5 p-2 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF]">
+                    {EVENT_EMOJI_OPTIONS.map(em => (
+                      <button
+                        key={em}
+                        type="button"
+                        onClick={() => setEventEmoji(em)}
+                        className={`h-8 rounded-lg flex items-center justify-center text-base transition-all ${
+                          eventEmoji === em
+                            ? 'bg-[#0B2559] text-white shadow-2xs scale-105'
+                            : 'bg-white hover:bg-[#EAF3FF]'
+                        }`}
+                      >
+                        {em}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {eventFormError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                    {eventFormError}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#D6EAFF]">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddEventModalOpen(false)}
+                    className="min-h-[40px] px-4 py-2 rounded-xl font-bold text-[#0B2559] bg-white border border-[#B3D9FF] hover:bg-[#F4F9FF]"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="min-h-[40px] px-5 py-2 rounded-xl font-bold text-white bg-[#0B2559] hover:bg-[#15397A]"
+                  >
+                    Guardar Evento
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>

@@ -96,6 +96,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   const [canSendChat, setCanSendChat] = useState(true);
   const [canViewVault, setCanViewVault] = useState(true);
   const [canExportReports, setCanExportReports] = useState(true);
+  const [canCreateEvents, setCanCreateEvents] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -137,6 +138,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       setCanSendChat(isSingleAdmin ? true : (user.canSendChat ?? true));
       setCanViewVault(isSingleAdmin ? true : (user.canViewVault ?? true));
       setCanExportReports(isSingleAdmin ? true : (user.canExportReports ?? true));
+      setCanCreateEvents(isSingleAdmin ? true : Boolean(user.canCreateEvents));
 
       setAdminAuthCedula('');
       setAdminOldPassword('');
@@ -233,6 +235,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
         canSendChat: isTargetSingleAdmin ? true : canSendChat,
         canViewVault: isTargetSingleAdmin ? true : canViewVault,
         canExportReports: isTargetSingleAdmin ? true : canExportReports,
+        canCreateEvents: isTargetSingleAdmin ? true : canCreateEvents,
       };
 
       await saveUserToFirestore(updatedUser);
@@ -992,6 +995,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                     { label: 'Crear Tareas', value: canCreateTasks, toggle: () => !isTargetSingleAdmin && setCanCreateTasks(!canCreateTasks) },
                     { label: 'Editar Tareas y Progreso', value: canEditTasks, toggle: () => !isTargetSingleAdmin && setCanEditTasks(!canEditTasks) },
                     { label: 'Eliminar Tareas', value: canDeleteTasks, toggle: () => !isTargetSingleAdmin && setCanDeleteTasks(!canDeleteTasks) },
+                    { label: 'Agregar Eventos', value: canCreateEvents, toggle: () => !isTargetSingleAdmin && setCanCreateEvents(!canCreateEvents) },
                     { label: 'Enviar Mensajes de Chat', value: canSendChat, toggle: () => !isTargetSingleAdmin && setCanSendChat(!canSendChat) },
                     { label: 'Ver Claves y Bóveda Directa', value: canViewVault, toggle: () => !isTargetSingleAdmin && setCanViewVault(!canViewVault) },
                     { label: 'Exportar Reportes PDF', value: canExportReports, toggle: () => !isTargetSingleAdmin && setCanExportReports(!canExportReports) },

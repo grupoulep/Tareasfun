@@ -168,6 +168,83 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [resendHistory, setResendHistory] = useState<ResendSentRecord[]>([]);
   const [userRecoveryEmails, setUserRecoveryEmails] = useState<Record<string, string>>({});
   const [recoveryConfigSavedMsg, setRecoveryConfigSavedMsg] = useState<string | null>(null);
+  const [recoverySecurityStates, setRecoverySecurityStates] = useState<
+    Record<string, { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }>
+  >(() => {
+    try {
+      const raw = localStorage.getItem('ulep_recovery_security_state_v1');
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    return {};
+  });
+
+  const isUserLockedBySecurity = (u: AppUser): boolean => {
+    return Boolean(recoverySecurityStates[u.cedula]?.locked) || u.approvalStatus === 'rechazado';
+  };
+
+  const handleUnlockUserAccountAndEmails = async (targetUser: AppUser) => {
+    try {
+      const resp = await fetch('/api/resend/unlock-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cedula: targetUser.cedula }),
+      });
+      const data = await resp.json();
+      if (data?.securityStates && typeof data.securityStates === 'object') {
+        setRecoverySecurityStates(data.securityStates);
+        localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(data.securityStates));
+      } else {
+        setRecoverySecurityStates(prev => {
+          const next = {
+            ...prev,
+            [targetUser.cedula]: {
+              cedula: targetUser.cedula,
+              sendAttempts: 0,
+              verifyAttempts: 0,
+              locked: false,
+            },
+          };
+          localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(next));
+          return next;
+        });
+      }
+    } catch {
+      setRecoverySecurityStates(prev => {
+        const next = {
+          ...prev,
+          [targetUser.cedula]: {
+            cedula: targetUser.cedula,
+            sendAttempts: 0,
+            verifyAttempts: 0,
+            locked: false,
+          },
+        };
+        localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(next));
+        return next;
+      });
+    }
+
+    await saveUserToFirestore({
+      ...targetUser,
+      approvalStatus: 'aprobado',
+    });
+
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'DESBLOQUEO_ADMIN_CUENTA_Y_CORREO',
+      module: 'SEGURIDAD_USUARIOS',
+      description: `El administrador desbloqueó la cuenta y el envío de correos de ${targetUser.name} (C.C. ${targetUser.cedula}).`,
+      targetId: targetUser.cedula,
+      severity: 'info',
+    });
+
+    setRecoveryConfigSavedMsg(`Cuenta y envío de correos desbloqueados para ${targetUser.name}.`);
+    setTimeout(() => setRecoveryConfigSavedMsg(null), 3500);
+  };
 
   const handleSaveUserRecoveryEmail = async (targetUser: AppUser) => {
     const draftEmail = (
@@ -196,6 +273,23 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
     setRecoveryConfigSavedMsg(`Correo de ${targetUser.name} actualizado a: ${draftEmail}`);
     setTimeout(() => setRecoveryConfigSavedMsg(null), 3500);
   };
+
+  useEffect(() => {
+    fetch('/api/resend/recovery-config')
+      .then(r => r.json())
+      .then(data => {
+        if (data?.securityStates && typeof data.securityStates === 'object') {
+          setRecoverySecurityStates(prev => {
+            const merged = { ...prev, ...data.securityStates };
+            localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(merged));
+            return merged;
+          });
+        }
+      })
+      .catch(() => {
+        // Silencioso
+      });
+  }, [activeSection]);
 
   useEffect(() => {
     if (activeSection !== 'admin_resend') return;
@@ -609,7 +703,14 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
   const handleTogglePermission = async (
     targetUser: AppUser,
-    permKey: 'canCreateTasks' | 'canEditTasks' | 'canDeleteTasks' | 'canSendChat' | 'canViewVault' | 'canExportReports',
+    permKey:
+      | 'canCreateTasks'
+      | 'canEditTasks'
+      | 'canDeleteTasks'
+      | 'canCreateEvents'
+      | 'canSendChat'
+      | 'canViewVault'
+      | 'canExportReports',
     permLabel: string
   ) => {
     if (targetUser.cedula === SINGLE_ADMIN_CEDULA) return;
@@ -814,12 +915,20 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   };
 
   const permButtons: {
-    key: 'canCreateTasks' | 'canEditTasks' | 'canDeleteTasks' | 'canSendChat' | 'canViewVault' | 'canExportReports';
+    key:
+      | 'canCreateTasks'
+      | 'canEditTasks'
+      | 'canDeleteTasks'
+      | 'canCreateEvents'
+      | 'canSendChat'
+      | 'canViewVault'
+      | 'canExportReports';
     label: string;
   }[] = [
     { key: 'canCreateTasks', label: 'Crear Tareas' },
     { key: 'canEditTasks', label: 'Editar / Progreso' },
     { key: 'canDeleteTasks', label: 'Eliminar Tareas' },
+    { key: 'canCreateEvents', label: 'Agregar Eventos' },
     { key: 'canSendChat', label: 'Enviar Chat' },
     { key: 'canViewVault', label: 'Ver Claves/Links' },
     { key: 'canExportReports', label: 'Exportar PDF' },
@@ -1009,9 +1118,46 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             {u.locationCity}
                           </span>
                         )}
+                        {isUserLockedBySecurity(u) && (
+                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-md bg-rose-100 border border-rose-300 text-rose-700 flex items-center gap-1">
+                            <i className="fi fi-rr-lock text-[10px]" />
+                            Bloqueado
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                        {isUserLockedBySecurity(u) && (
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleUnlockUserAccountAndEmails(u);
+                            }}
+                            className="min-h-[34px] sm:min-h-0 px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg flex items-center gap-1.5 transition-colors shadow-2xs"
+                          >
+                            <i className="fi fi-rr-unlock text-xs" />
+                            <span>Desbloquear</span>
+                          </button>
+                        )}
+                        {!isSingleAdmin && (
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleTogglePermission(u, 'canCreateEvents', 'Agregar Eventos');
+                            }}
+                            className={`min-h-[34px] sm:min-h-0 px-2.5 py-1 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors border ${
+                              u.canCreateEvents
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                                : 'bg-[#F4F9FF] text-[#0B2559]/75 border-[#B3D9FF] hover:bg-[#EAF3FF]'
+                            }`}
+                            title="Activar o desactivar permiso de Agregar Evento para este usuario"
+                          >
+                            <i className="fi fi-rr-calendar text-xs" />
+                            <span>{u.canCreateEvents ? 'Eventos: Activo' : 'Activar Eventos'}</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={e => {
@@ -1930,15 +2076,22 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                       className="p-2.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-[#0B2559] truncate">
-                          {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                        <div className="text-xs font-bold text-[#0B2559] truncate flex items-center gap-1.5">
+                          <span>
+                            {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                          </span>
+                          {isUserLockedBySecurity(u) && (
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-rose-100 border border-rose-300 text-rose-700">
+                              Bloqueado
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-[#3B82F6]">
                           Se muestra al usuario: <strong className="font-mono text-[#0B2559]">{maskedPreview}</strong>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 sm:w-80">
+                      <div className="flex items-center gap-1.5 sm:w-auto">
                         <input
                           type="email"
                           value={currentVal}
@@ -1949,7 +2102,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             }))
                           }
                           placeholder="correo@ejemplo.com"
-                          className="flex-1 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                          className="flex-1 sm:w-52 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
                         />
                         <button
                           type="button"
@@ -1958,6 +2111,15 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                         >
                           Guardar
                         </button>
+                        {isUserLockedBySecurity(u) && (
+                          <button
+                            type="button"
+                            onClick={() => handleUnlockUserAccountAndEmails(u)}
+                            className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shrink-0"
+                          >
+                            Desbloquear
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2725,15 +2887,22 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                       className="p-2.5 rounded-xl bg-white border border-[#D6EAFF] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-[#0B2559] truncate">
-                          {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                        <div className="text-xs font-bold text-[#0B2559] truncate flex items-center gap-1.5">
+                          <span>
+                            {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                          </span>
+                          {isUserLockedBySecurity(u) && (
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-rose-100 border border-rose-300 text-rose-700">
+                              Bloqueado
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-[#3B82F6]">
                           Vista al recuperar: <strong className="font-mono text-[#0B2559]">Digite el código enviado al correo {maskedPreview}</strong>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 sm:w-80">
+                      <div className="flex items-center gap-1.5 sm:w-auto">
                         <input
                           type="email"
                           value={currentVal}
@@ -2744,7 +2913,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             }))
                           }
                           placeholder="correo@ejemplo.com"
-                          className="flex-1 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                          className="flex-1 sm:w-52 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
                         />
                         <button
                           type="button"
@@ -2753,6 +2922,15 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                         >
                           Guardar
                         </button>
+                        {isUserLockedBySecurity(u) && (
+                          <button
+                            type="button"
+                            onClick={() => handleUnlockUserAccountAndEmails(u)}
+                            className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shrink-0"
+                          >
+                            Desbloquear
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

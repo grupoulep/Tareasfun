@@ -295,15 +295,106 @@ export async function recordAuditLog(params: {
   }
 }
 
+export const USER_EVENT_PERMS_STORAGE_KEY = 'ulep_user_event_permissions_v1';
+
+export function readUserEventPermissions(): Record<string, boolean> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(USER_EVENT_PERMS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function writeUserEventPermission(cedula: string, allowed: boolean) {
+  const cleanCed = String(cedula || '').trim();
+  if (!cleanCed) return;
+  const currentMap = readUserEventPermissions();
+  const nextMap: Record<string, boolean> = {
+    ...currentMap,
+    [cleanCed]: cleanCed === SINGLE_ADMIN_CEDULA ? true : Boolean(allowed),
+  };
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(USER_EVENT_PERMS_STORAGE_KEY, JSON.stringify(nextMap));
+      window.dispatchEvent(new Event('ulep_event_perms_updated'));
+    } catch {
+      // ignore
+    }
+  }
+  const vault = readPermanentVault();
+  if (vault.users[cleanCed]) {
+    vault.users[cleanCed] = {
+      ...vault.users[cleanCed],
+      canCreateEvents: nextMap[cleanCed],
+    };
+    writePermanentVault(vault);
+  }
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', 'config_event_permissions'),
+      {
+        title: 'Configuracion Permisos Eventos',
+        date: 'CONFIG_PERMS',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(nextMap).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: 'CONFIG_PERMS',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+}
+
+export function hydrateCalendarEvent(raw: CalendarEvent): CalendarEvent {
+  let startTime = raw.startTime || '';
+  let endTime = raw.endTime || '';
+  if (!startTime && raw.time) {
+    if (raw.time.includes(' - ')) {
+      const parts = raw.time.split(' - ');
+      startTime = (parts[0] || '08:00').trim();
+      endTime = (parts[1] || '09:00').trim();
+    } else {
+      startTime = raw.time.trim();
+      endTime = '';
+    }
+  }
+  const emoji = (raw.emoji || (raw.description && raw.description.length <= 16 ? raw.description : '📅') || '📅').trim();
+  return {
+    ...raw,
+    startTime: startTime || '08:00',
+    endTime: endTime || '09:00',
+    emoji,
+  };
+}
+
 export async function saveUserToFirestore(user: AppUser) {
   const cedulaId = cleanId(user.cedula);
   const path = `app_users/${cedulaId}`;
   const payload = sanitizeUserPayload({ ...user, cedula: cedulaId });
+  const isSingleAdmin = cedulaId === SINGLE_ADMIN_CEDULA;
+  const eventPerms = readUserEventPermissions();
+  const canCreateEventsVal = isSingleAdmin
+    ? true
+    : user.canCreateEvents !== undefined
+    ? Boolean(user.canCreateEvents)
+    : Boolean(eventPerms[cedulaId]);
 
   const vault = readPermanentVault();
-  vault.users[cedulaId] = payload;
+  vault.users[cedulaId] = { ...payload, canCreateEvents: canCreateEventsVal };
   vault.deletedUserCedulas = vault.deletedUserCedulas.filter(c => c !== cedulaId);
   writePermanentVault(vault);
+
+  if (user.canCreateEvents !== undefined || isSingleAdmin) {
+    void writeUserEventPermission(cedulaId, canCreateEventsVal);
+  }
 
   try {
     await setDoc(doc(db, 'app_users', cedulaId), payload, { merge: true });
@@ -397,19 +488,42 @@ export async function saveChatMessageToFirestore(msg: Omit<ChatMessage, 'id'>, c
 export async function saveCalendarEventToFirestore(ev: CalendarEvent) {
   const evId = cleanId(ev.id);
   const path = `calendar_events/${evId}`;
+  const startTime = String(
+    ev.startTime || (ev.time && ev.time.includes(' - ') ? ev.time.split(' - ')[0] : ev.time) || '08:00'
+  )
+    .trim()
+    .slice(0, 8);
+  const endTime = String(
+    ev.endTime || (ev.time && ev.time.includes(' - ') ? ev.time.split(' - ')[1] : '') || '09:00'
+  )
+    .trim()
+    .slice(0, 8);
+  const combinedTime = endTime ? `${startTime} - ${endTime}`.slice(0, 20) : startTime.slice(0, 20);
+  const emojiStr = String(ev.emoji || (ev.description && ev.description.length <= 16 ? ev.description : '📅') || '📅')
+    .trim()
+    .slice(0, 16);
+  const rawTitle = String(ev.title || 'Evento').trim();
+  const safeTitle = (rawTitle.length < 2 ? `${rawTitle} ` : rawTitle).slice(0, 150);
+
   const payload = {
-    title: String(ev.title || 'Evento').trim().slice(0, 150),
+    title: safeTitle,
     date: String(ev.date || '').slice(0, 50),
-    time: String(ev.time || '09:00').slice(0, 20),
+    time: combinedTime,
     type: (['entrega', 'reunion', 'auditoria', 'hito', 'actividad'].includes(ev.type) ? ev.type : 'actividad') as CalendarEvent['type'],
-    description: String(ev.description || '').slice(0, 500),
+    description: String(ev.emoji ? emojiStr : ev.description || emojiStr).slice(0, 500),
     createdByCedula: String(ev.createdByCedula || '').slice(0, 20),
     createdByName: String(ev.createdByName || '').slice(0, 100),
     linkedTaskId: String(ev.linkedTaskId || '').slice(0, 128),
   };
 
   const vault = readPermanentVault();
-  vault.calendarEvents[evId] = { id: evId, ...payload };
+  vault.calendarEvents[evId] = {
+    id: evId,
+    ...payload,
+    startTime,
+    endTime,
+    emoji: emojiStr,
+  };
   vault.deletedEventIds = vault.deletedEventIds.filter(id => id !== evId);
   writePermanentVault(vault);
 
@@ -526,7 +640,7 @@ export async function seedInitialDatabaseIfEmpty() {
     const remoteEventIds = new Set(eventsSnap.docs.map(d => d.id));
     for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
       if (evId && !remoteEventIds.has(evId) && !deletedEvents.has(evId)) {
-        const { id: _ignore, ...evPayload } = localEv;
+        const { id: _ignore, startTime: _st, endTime: _et, emoji: _em, ...evPayload } = localEv;
         await setDoc(doc(db, 'calendar_events', evId), evPayload, { merge: true });
       }
     }

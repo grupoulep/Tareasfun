@@ -262,6 +262,34 @@ interface RecoveryCodeEntry {
 
 const activeRecoveryCodes = new Map<string, RecoveryCodeEntry>();
 
+interface UserRecoverySecurityState {
+  cedula: string;
+  sendAttempts: number;
+  verifyAttempts: number;
+  locked: boolean;
+  lockedAt?: string;
+}
+
+const userRecoverySecurityMap = new Map<string, UserRecoverySecurityState>();
+
+function getOrInitSecurityState(cedula: string): UserRecoverySecurityState {
+  const existing = userRecoverySecurityMap.get(cedula);
+  if (existing) return existing;
+  const fresh: UserRecoverySecurityState = {
+    cedula,
+    sendAttempts: 0,
+    verifyAttempts: 0,
+    locked: false,
+  };
+  userRecoverySecurityMap.set(cedula, fresh);
+  return fresh;
+}
+
+function isUserLockedForEmailsAndAccount(cedula?: string): boolean {
+  if (!cedula) return false;
+  return Boolean(userRecoverySecurityMap.get(String(cedula).trim())?.locked);
+}
+
 function maskEmailStartOnly(email: string): string {
   const clean = (email || RESEND_EXCLUSIVE_RECIPIENT).trim();
   const localPart = clean.split('@')[0] || clean;
@@ -290,6 +318,7 @@ async function startServer() {
       sentHistory: Array.from(sentNotificationsMap.values()).sort(
         (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
       ),
+      securityStates: Object.fromEntries(userRecoverySecurityMap.entries()),
     });
   });
 
@@ -297,6 +326,7 @@ async function startServer() {
     res.json({
       recoveryEmail: recoveryEmailRecipient,
       maskedEmail: maskEmailStartOnly(recoveryEmailRecipient),
+      securityStates: Object.fromEntries(userRecoverySecurityMap.entries()),
     });
   });
 
@@ -309,6 +339,25 @@ async function startServer() {
       ok: true,
       recoveryEmail: recoveryEmailRecipient,
       maskedEmail: maskEmailStartOnly(recoveryEmailRecipient),
+      securityStates: Object.fromEntries(userRecoverySecurityMap.entries()),
+    });
+  });
+
+  app.post('/api/resend/unlock-user', (req, res) => {
+    const cedula = String(req.body?.cedula || '').trim();
+    if (!cedula) {
+      return res.status(400).json({ error: 'Cédula requerida.' });
+    }
+    userRecoverySecurityMap.set(cedula, {
+      cedula,
+      sendAttempts: 0,
+      verifyAttempts: 0,
+      locked: false,
+    });
+    activeRecoveryCodes.delete(cedula);
+    return res.json({
+      ok: true,
+      securityStates: Object.fromEntries(userRecoverySecurityMap.entries()),
     });
   });
 
@@ -317,14 +366,42 @@ async function startServer() {
       const cedula = String(req.body?.cedula || '').trim();
       const userName = String(req.body?.userName || 'Usuario').trim();
       const userEmail = String(req.body?.userEmail || req.body?.recoveryEmailOverride || '').trim();
+      const clientLocked = Boolean(req.body?.isCurrentlyLocked);
 
       if (!cedula) {
         return res.status(400).json({ error: 'Debes ingresar el número de cédula.' });
       }
 
+      const secState = getOrInitSecurityState(cedula);
+      if (clientLocked && !secState.locked) {
+        secState.locked = true;
+        secState.lockedAt = new Date().toISOString();
+      }
+
+      if (secState.locked) {
+        return res.status(403).json({
+          locked: true,
+          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+          securityState: secState,
+        });
+      }
+
       if (!userEmail || !userEmail.includes('@')) {
         return res.status(400).json({
           error: 'Este usuario no tiene un correo válido registrado en su ficha.',
+        });
+      }
+
+      // Tiene 2 intentos; al 3er intento se bloquea la cuenta y el envío de correos de ese usuario
+      secState.sendAttempts += 1;
+      if (secState.sendAttempts >= 3) {
+        secState.locked = true;
+        secState.lockedAt = new Date().toISOString();
+        activeRecoveryCodes.delete(cedula);
+        return res.status(403).json({
+          locked: true,
+          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+          securityState: secState,
         });
       }
 
@@ -348,7 +425,7 @@ async function startServer() {
 
       if (resendApiKey) {
         const emailHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+          <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
             <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
               <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
             </div>
@@ -384,6 +461,7 @@ async function startServer() {
         ok: true,
         status: emailStatus,
         maskedEmail: maskEmailStartOnly(targetEmail),
+        securityState: secState,
       });
     } catch (error: unknown) {
       return res.status(500).json({
@@ -396,31 +474,50 @@ async function startServer() {
     const cedula = String(req.body?.cedula || '').trim();
     const code = String(req.body?.code || '').trim();
 
+    const secState = getOrInitSecurityState(cedula);
+    if (secState.locked) {
+      return res.status(403).json({
+        valid: false,
+        locked: true,
+        error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+        securityState: secState,
+      });
+    }
+
     const entry = activeRecoveryCodes.get(cedula);
-    if (!entry) {
+    if (!entry || Date.now() > entry.expiresAt || entry.code !== code) {
+      secState.verifyAttempts += 1;
+      if (secState.verifyAttempts >= 3) {
+        secState.locked = true;
+        secState.lockedAt = new Date().toISOString();
+        activeRecoveryCodes.delete(cedula);
+        return res.status(403).json({
+          valid: false,
+          locked: true,
+          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+          securityState: secState,
+        });
+      }
       return res.status(400).json({
         valid: false,
-        error: 'El código ingresado no es válido o ha expirado.',
-      });
-    }
-
-    if (Date.now() > entry.expiresAt) {
-      activeRecoveryCodes.delete(cedula);
-      return res.status(400).json({
-        valid: false,
-        error: 'El código ha expirado. Solicita uno nuevo.',
-      });
-    }
-
-    if (entry.code !== code) {
-      return res.status(400).json({
-        valid: false,
+        locked: false,
         error: 'El código ingresado es incorrecto.',
+        securityState: secState,
       });
     }
 
     activeRecoveryCodes.delete(cedula);
-    return res.json({ valid: true });
+    userRecoverySecurityMap.set(cedula, {
+      cedula,
+      sendAttempts: 0,
+      verifyAttempts: 0,
+      locked: false,
+    });
+    return res.json({
+      valid: true,
+      locked: false,
+      securityState: userRecoverySecurityMap.get(cedula),
+    });
   });
 
   app.post('/api/resend/check-and-notify', async (req, res) => {
@@ -463,6 +560,9 @@ async function startServer() {
 
       for (const t of tasksToEvaluate) {
         if (!t || !t.id) continue;
+        if (isUserLockedForEmailsAndAccount(String(t.assignedToCedula || ''))) {
+          continue;
+        }
         const isForced = Boolean(forceTaskId && String(t.id) === forceTaskId);
         const activeMilestone = isForced
           ? forcedMilestone || getActiveMilestoneForTask(String(t.dueDate || ''), String(t.status || '')) || 24
@@ -521,6 +621,9 @@ async function startServer() {
       }
 
       for (const t of combined.values()) {
+        if (isUserLockedForEmailsAndAccount(String(t.assignedToCedula || ''))) {
+          continue;
+        }
         const milestone = getActiveMilestoneForTask(t.dueDate, t.status || 'pendiente');
         if (milestone) {
           const key = `${t.id}_${milestone}h`;

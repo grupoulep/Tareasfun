@@ -18,6 +18,8 @@ import {
   cleanId,
   readPermanentVault,
   syncCollectionToPermanentVault,
+  readUserEventPermissions,
+  USER_EVENT_PERMS_STORAGE_KEY,
 } from './firebase';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { AdminViews } from './components/AdminViews';
@@ -53,7 +55,19 @@ import {
 import { SearchableLocationSelect } from './components/SearchableLocationSelect';
 
 export default function App() {
-  const [users, setUsers] = useState<AppUser[]>(() => Object.values(readPermanentVault().users));
+  const [eventPermsMap, setEventPermsMap] = useState<Record<string, boolean>>(() =>
+    readUserEventPermissions()
+  );
+  const [rawUsers, setRawUsers] = useState<AppUser[]>(() => Object.values(readPermanentVault().users));
+  const users: AppUser[] = rawUsers.map(u => ({
+    ...u,
+    canCreateEvents:
+      u.cedula === SINGLE_ADMIN_CEDULA || u.role === 'admin'
+        ? true
+        : eventPermsMap[u.cedula] !== undefined
+        ? Boolean(eventPermsMap[u.cedula])
+        : Boolean(u.canCreateEvents),
+  }));
   const [tasks, setTasks] = useState<TaskItem[]>(() => Object.values(readPermanentVault().tasks));
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() =>
     Object.values(readPermanentVault().auditLogs).sort(
@@ -66,7 +80,9 @@ export default function App() {
     )
   );
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() =>
-    Object.values(readPermanentVault().calendarEvents)
+    Object.values(readPermanentVault().calendarEvents).filter(
+      ev => ev.id !== 'config_event_permissions' && ev.date !== 'CONFIG_PERMS'
+    )
   );
   const [loadingData, setLoadingData] = useState(() => Object.keys(readPermanentVault().users).length === 0);
 
@@ -154,6 +170,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const handlePermsUpdated = () => {
+      setEventPermsMap(readUserEventPermissions());
+    };
+    window.addEventListener('ulep_event_perms_updated', handlePermsUpdated);
+    return () => window.removeEventListener('ulep_event_perms_updated', handlePermsUpdated);
+  }, []);
+
+  useEffect(() => {
     seedInitialDatabaseIfEmpty();
 
     const unsubUsers = onSnapshot(
@@ -164,7 +188,7 @@ export default function App() {
           list.push(d.data() as AppUser);
         });
         syncCollectionToPermanentVault('users', list, u => u.cedula);
-        setUsers(list);
+        setRawUsers(list);
         setLoadingData(false);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'app_users')
@@ -215,7 +239,20 @@ export default function App() {
       snap => {
         const list: CalendarEvent[] = [];
         snap.forEach(d => {
-          list.push({ ...(d.data() as Omit<CalendarEvent, 'id'>), id: d.id });
+          const docData = d.data() as Omit<CalendarEvent, 'id'>;
+          if (d.id === 'config_event_permissions' || docData.date === 'CONFIG_PERMS') {
+            try {
+              const parsed = JSON.parse(docData.description || '{}');
+              if (parsed && typeof parsed === 'object') {
+                window.localStorage.setItem(USER_EVENT_PERMS_STORAGE_KEY, JSON.stringify(parsed));
+                setEventPermsMap(parsed);
+              }
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          list.push({ ...docData, id: d.id });
         });
         syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
         setCalendarEvents(list);
@@ -258,6 +295,37 @@ export default function App() {
     tasksRef.current = tasks;
   }, [tasks]);
 
+  const readRecoverySecurityMap = (): Record<
+    string,
+    { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }
+  > => {
+    try {
+      const raw = localStorage.getItem('ulep_recovery_security_state_v1');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const writeRecoverySecurityState = (
+    cedula: string,
+    state: { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }
+  ) => {
+    try {
+      const map = readRecoverySecurityMap();
+      map[cedula] = state;
+      localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  };
+
+  const isUserLockedLocally = (cedula?: string): boolean => {
+    if (!cedula) return false;
+    const map = readRecoverySecurityMap();
+    return Boolean(map[String(cedula).trim()]?.locked);
+  };
+
   const evaluateAndSendMilestoneAlerts = (taskList: TaskItem[]) => {
     if (!taskList || taskList.length === 0) return;
     const nowMs = Date.now();
@@ -285,6 +353,7 @@ export default function App() {
     }
 
     const tasksNeedingAlert = taskList.filter(t => {
+      if (isUserLockedLocally(t.assignedToCedula)) return false;
       const milestone = getTaskMilestone(t);
       if (!milestone) return false;
       const key = `${t.id}_${milestone}h`;
@@ -335,6 +404,12 @@ export default function App() {
     e.preventDefault();
     setLoginError(null);
     const cleanCed = loginCedulaInput.trim();
+
+    if (cleanCed !== SINGLE_ADMIN_CEDULA && isUserLockedLocally(cleanCed)) {
+      setLoginError('Tu cuenta se encuentra bloqueada. Solo el Administrador puede desbloquearla.');
+      return;
+    }
+
     const found = users.find(u => u.cedula === cleanCed && u.password === loginPasswordInput);
 
     if (!found) {
@@ -351,7 +426,7 @@ export default function App() {
 
     if (found.approvalStatus === 'rechazado') {
       setLoginError(
-        'Tu solicitud de registro fue rechazada por el Administrador. Contacta a Dirección General.'
+        'Tu cuenta se encuentra bloqueada o restringida. Contacta al Administrador.'
       );
       return;
     }
@@ -395,6 +470,11 @@ export default function App() {
       return;
     }
 
+    if (isUserLockedLocally(cleanCed) || targetUser.approvalStatus === 'rechazado') {
+      setRecoverError('Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.');
+      return;
+    }
+
     const userRegisteredEmail = (targetUser.email || '').trim();
     if (!userRegisteredEmail || !userRegisteredEmail.includes('@')) {
       setRecoverError('Este usuario no tiene un correo electrónico válido registrado en su ficha.');
@@ -410,10 +490,38 @@ export default function App() {
           cedula: targetUser.cedula,
           userName: targetUser.name,
           userEmail: userRegisteredEmail,
+          isCurrentlyLocked: isUserLockedLocally(cleanCed),
         }),
       });
 
       const data = await response.json().catch(() => ({}));
+      if (data?.securityState) {
+        writeRecoverySecurityState(targetUser.cedula, data.securityState);
+      }
+
+      if (data?.locked) {
+        if (targetUser.cedula !== SINGLE_ADMIN_CEDULA) {
+          await saveUserToFirestore({
+            ...targetUser,
+            approvalStatus: 'rechazado',
+          });
+        }
+        await recordAuditLog({
+          actorCedula: targetUser.cedula,
+          actorName: targetUser.name,
+          actorRole: targetUser.role,
+          actionType: 'BLOQUEO_RECUPERACION_CUENTA_Y_CORREO',
+          module: 'SEGURIDAD_USUARIOS',
+          description: `Se bloqueó la cuenta y el envío de correos de ${targetUser.name} (C.C. ${targetUser.cedula}) al alcanzar el 3er intento de recuperación.`,
+          targetId: targetUser.cedula,
+          severity: 'critical',
+        });
+        setRecoverError(
+          data.error || 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.'
+        );
+        return;
+      }
+
       if (!response.ok) {
         setRecoverError(data.error || 'No se pudo enviar el código de recuperación.');
         return;
@@ -444,6 +552,11 @@ export default function App() {
       return;
     }
 
+    if (isUserLockedLocally(cleanCed) || targetUser.approvalStatus === 'rechazado') {
+      setRecoverError('Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.');
+      return;
+    }
+
     if (!recoverCodeInput.trim()) {
       setRecoverError('Ingresa el código enviado al correo.');
       return;
@@ -471,8 +584,35 @@ export default function App() {
       });
 
       const data = await response.json().catch(() => ({}));
+      if (data?.securityState) {
+        writeRecoverySecurityState(cleanCed, data.securityState);
+      }
+
+      if (data?.locked) {
+        if (targetUser.cedula !== SINGLE_ADMIN_CEDULA) {
+          await saveUserToFirestore({
+            ...targetUser,
+            approvalStatus: 'rechazado',
+          });
+        }
+        await recordAuditLog({
+          actorCedula: targetUser.cedula,
+          actorName: targetUser.name,
+          actorRole: targetUser.role,
+          actionType: 'BLOQUEO_RECUPERACION_CUENTA_Y_CORREO',
+          module: 'SEGURIDAD_USUARIOS',
+          description: `Se bloqueó la cuenta y el envío de correos de ${targetUser.name} (C.C. ${targetUser.cedula}) al alcanzar el 3er intento fallido de código de recuperación.`,
+          targetId: targetUser.cedula,
+          severity: 'critical',
+        });
+        setRecoverError(
+          data.error || 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.'
+        );
+        return;
+      }
+
       if (!response.ok || !data.valid) {
-        setRecoverError(data.error || 'El código ingresado es incorrecto o ha expirado.');
+        setRecoverError(data.error || 'El código ingresado es incorrecto.');
         return;
       }
 
@@ -683,14 +823,80 @@ export default function App() {
     });
   };
 
+  const renderBlueRibbonsBackground = (blurred = false) => (
+    <div className="crediulep-ribbons-bg" aria-hidden="true">
+      <svg
+        className={`crediulep-ribbons-svg ${blurred ? 'crediulep-ribbons-svg-blurred' : ''}`}
+        viewBox="0 0 1600 900"
+        fill="none"
+        preserveAspectRatio="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <defs>
+          <linearGradient id="crispRibbon1" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#1e3a8a" />
+            <stop offset="30%" stopColor="#2563eb" />
+            <stop offset="70%" stopColor="#3b82f6" />
+            <stop offset="100%" stopColor="#1d4ed8" />
+          </linearGradient>
+
+          <linearGradient id="crispRibbon2" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#0B2559" />
+            <stop offset="35%" stopColor="#1d4ed8" />
+            <stop offset="70%" stopColor="#60a5fa" />
+            <stop offset="100%" stopColor="#1e40af" />
+          </linearGradient>
+
+          <linearGradient id="crispRibbon3" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#1d4ed8" />
+            <stop offset="35%" stopColor="#60a5fa" />
+            <stop offset="70%" stopColor="#93c5fd" />
+            <stop offset="100%" stopColor="#2563eb" />
+          </linearGradient>
+        </defs>
+
+        <path
+          d="M -200 220 C 180 80, 480 370, 850 200 C 1220 30, 1500 340, 1880 180"
+          stroke="url(#crispRibbon1)"
+          strokeWidth="38"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="animate-ribbon1"
+          opacity="0.95"
+        />
+
+        <path
+          d="M -220 690 C 180 490, 520 830, 920 640 C 1300 450, 1560 760, 1900 580"
+          stroke="url(#crispRibbon2)"
+          strokeWidth="46"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="animate-ribbon2"
+          opacity="0.9"
+        />
+
+        <path
+          d="M -200 810 C 180 750, 450 360, 840 450 C 1220 530, 1440 220, 1880 120"
+          stroke="url(#crispRibbon3)"
+          strokeWidth="32"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="animate-ribbon3"
+          opacity="0.92"
+        />
+      </svg>
+    </div>
+  );
+
   // PANTALLA DE INICIO DE SESIÓN Y REGISTRO CON EL LOGO Y PALETA ULEP (#B3D9FF, #FFFFFF y #0B2559)
   if (!currentUser) {
     const showStepByStepReg = isMobileView && !regMobileShowAll;
 
     return (
-      <div className="min-h-screen bg-[#EAF3FF] flex flex-col justify-center py-4 sm:py-8 px-3 sm:px-6">
+      <div className="relative min-h-screen bg-[#f4f9ff] flex flex-col justify-center py-4 sm:py-8 px-3 sm:px-6 overflow-hidden">
+        {renderBlueRibbonsBackground()}
         <div
-          className={`${
+          className={`relative z-10 ${
             authMode === 'register'
               ? isMobileView
                 ? 'max-w-md'
@@ -1521,6 +1727,15 @@ export default function App() {
     return diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
   }).length;
 
+  const currentMonthPrefix = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+  const currentMonthEventsCount = calendarEvents.filter(
+    ev =>
+      ev.id !== 'config_event_permissions' &&
+      ev.date !== 'CONFIG_PERMS' &&
+      !ev.id.startsWith('ev_sync_') &&
+      ev.date.startsWith(currentMonthPrefix)
+  ).length;
+
   // NAVEGACIÓN PRINCIPAL CON PALETA ULEP (#B3D9FF + BLANCO + #0B2559)
   const adminNavItems: {
     id: NavSection;
@@ -1563,6 +1778,12 @@ export default function App() {
       iconClass: 'fi fi-rr-envelope',
       badge: expiring24hCount,
     },
+    {
+      id: 'user_calendar',
+      label: 'Eventos',
+      iconClass: 'fi fi-rr-calendar',
+      badge: currentMonthEventsCount,
+    },
   ];
 
   const urgentTasksCount = tasks.filter(
@@ -1586,12 +1807,19 @@ export default function App() {
       iconClass: 'fi fi-rr-checkbox',
       badge: pendingUserTasksCount,
     },
+    {
+      id: 'user_calendar',
+      label: 'Eventos',
+      iconClass: 'fi fi-rr-calendar',
+      badge: currentMonthEventsCount,
+    },
   ];
 
   const currentNavList = activePanelMode === 'admin' ? adminNavItems : userNavItems;
 
   return (
-    <div className={`min-h-screen bg-[#F4F9FF] flex flex-col ${isPcView ? 'lg:flex-row' : ''}`}>
+    <div className={`relative min-h-screen bg-[#f4f9ff] flex flex-col ${isPcView ? 'lg:flex-row' : ''}`}>
+      {renderBlueRibbonsBackground(true)}
       {/* Fondo oscuro cuando el menú lateral está abierto en Teléfono o Tablet */}
       {mobileMenuOpen && !isPcView && (
         <div
@@ -1697,7 +1925,7 @@ export default function App() {
       </aside>
 
       {/* Área Principal con Lienzo Celeste Suave y Blanco */}
-      <div className={`flex-1 flex flex-col min-w-0 ${isMobileView ? 'pb-16' : ''}`}>
+      <div className={`relative z-10 flex-1 flex flex-col min-w-0 ${isMobileView ? 'pb-16' : ''}`}>
         {/* Top Bar Adaptable a Teléfono, Tablet y PC */}
         <header className="bg-white border-b border-[#B3D9FF] px-3 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 sticky top-0 z-30">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -1822,7 +2050,7 @@ export default function App() {
             isMobileView ? 'max-w-lg' : isTabletView ? 'max-w-5xl' : 'max-w-6xl'
           }`}
         >
-          {activePanelMode === 'admin' && currentUser.role === 'admin' ? (
+          {activePanelMode === 'admin' && currentUser.role === 'admin' && activeSection !== 'user_calendar' ? (
             <AdminViews
               activeSection={
                 (activeSection.startsWith('admin_') ? activeSection : 'admin_users') as
@@ -1926,14 +2154,30 @@ export default function App() {
                 })}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-2 max-w-lg mx-auto">
+              <div className="grid grid-cols-3 gap-2 max-w-lg mx-auto">
                 <button
                   type="button"
                   onClick={() => setActiveSection('user_personal')}
-                  className="min-h-[44px] rounded-xl bg-[#0B2559] text-white font-bold text-xs flex items-center justify-center gap-1.5"
+                  className={`min-h-[44px] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 ${
+                    activeSection === 'user_personal'
+                      ? 'bg-[#0B2559] text-white'
+                      : 'bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF]'
+                  }`}
                 >
-                  <i className="fi fi-rr-checkbox text-xs text-[#B3D9FF]" />
+                  <i className="fi fi-rr-checkbox text-xs" />
                   <span>Chequeo ({pendingUserTasksCount})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('user_calendar')}
+                  className={`min-h-[44px] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 ${
+                    activeSection === 'user_calendar'
+                      ? 'bg-[#0B2559] text-white'
+                      : 'bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF]'
+                  }`}
+                >
+                  <i className="fi fi-rr-calendar text-xs" />
+                  <span>Eventos ({currentMonthEventsCount})</span>
                 </button>
                 <button
                   type="button"
@@ -1941,7 +2185,7 @@ export default function App() {
                   className="min-h-[44px] rounded-xl bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] font-bold text-xs flex items-center justify-center gap-1.5"
                 >
                   <i className="fi fi-rr-menu-burger text-xs" />
-                  <span>Menú / Perfil</span>
+                  <span>Menú</span>
                 </button>
               </div>
             )}
