@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppUser, TaskItem, TaskPriority, TaskStatus } from '../types';
 import {
   saveTaskToFirestore,
@@ -187,6 +187,13 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Tarea seleccionada exclusivamente para VER
   const [viewingTask, setViewingTask] = useState<TaskItem | null>(null);
+  const [viewingAssignees, setViewingAssignees] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (viewingTask) {
+      setViewingAssignees([viewingTask.assignedToCedula || 'ABIERTA']);
+    }
+  }, [viewingTask?.id]);
 
   // Ocultar o mostrar hechas
   const [showCompleted, setShowCompleted] = useState(true);
@@ -286,28 +293,82 @@ export const UserViews: React.FC<UserViewsProps> = ({
     });
   };
 
-  // Cambiar encargado de una tarea existente (a cualquier usuario o Abierta)
-  const handleChangeTaskAssignee = async (task: TaskItem, targetCedula: string) => {
-    const isOpen = targetCedula === 'ABIERTA';
-    const targetUser = isOpen ? null : users.find(u => u.cedula === targetCedula) || currentUser;
-    const updated: TaskItem = {
-      ...task,
-      assignedToCedula: isOpen ? 'ABIERTA' : targetUser!.cedula,
-      assignedToName: isOpen ? 'Abierta (Cualquiera puede realizarla)' : targetUser!.name,
-    };
-    await saveTaskToFirestore(updated);
-    if (viewingTask && viewingTask.id === task.id) {
-      setViewingTask(updated);
+  // Cambiar encargado(s) de una tarea existente (1 o varios usuarios -> tareas separadas)
+  const handleApplyViewingAssignees = async (task: TaskItem, selectedCedulas: string[]) => {
+    const effective =
+      selectedCedulas.length > 0 ? selectedCedulas : [task.assignedToCedula || 'ABIERTA'];
+
+    const ordered = effective.includes(task.assignedToCedula)
+      ? [
+          task.assignedToCedula,
+          ...effective.filter(c => c !== task.assignedToCedula),
+        ]
+      : effective;
+
+    for (let i = 0; i < ordered.length; i++) {
+      const targetCedula = ordered[i];
+      const isOpen = targetCedula === 'ABIERTA';
+      const targetUser = isOpen ? null : users.find(u => u.cedula === targetCedula) || currentUser;
+      const assignedCed = isOpen ? 'ABIERTA' : targetUser!.cedula;
+      const assignedName = isOpen
+        ? 'Abierta (Cualquiera puede realizarla)'
+        : targetUser!.name;
+
+      if (i === 0) {
+        if (assignedCed !== task.assignedToCedula) {
+          const updated: TaskItem = {
+            ...task,
+            assignedToCedula: assignedCed,
+            assignedToName: assignedName,
+          };
+          await saveTaskToFirestore(updated);
+          setViewingTask(updated);
+          await recordAuditLog({
+            actorCedula: currentUser.cedula,
+            actorName: currentUser.name,
+            actorRole: currentUser.role,
+            actionType: 'ASIGNAR_ENCARGADO_TAREA',
+            module: 'LISTA_CHEQUEO',
+            description: `Asignó la tarea "${task.title}" a: ${updated.assignedToName}.`,
+            targetId: task.id,
+            severity: 'info',
+          });
+        }
+      } else {
+        const separateTask: TaskItem = {
+          ...task,
+          id: cleanId(`chk_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`),
+          assignedToCedula: assignedCed,
+          assignedToName: assignedName,
+        };
+        await saveTaskToFirestore(separateTask);
+        await recordAuditLog({
+          actorCedula: currentUser.cedula,
+          actorName: currentUser.name,
+          actorRole: currentUser.role,
+          actionType: 'ASIGNAR_ENCARGADO_TAREA',
+          module: 'LISTA_CHEQUEO',
+          description: `Asignó la tarea "${task.title}" a: ${separateTask.assignedToName}.`,
+          targetId: separateTask.id,
+          severity: 'info',
+        });
+      }
     }
-    await recordAuditLog({
-      actorCedula: currentUser.cedula,
-      actorName: currentUser.name,
-      actorRole: currentUser.role,
-      actionType: 'ASIGNAR_ENCARGADO_TAREA',
-      module: 'LISTA_CHEQUEO',
-      description: `Asignó la tarea "${task.title}" a: ${updated.assignedToName}.`,
-      targetId: task.id,
-      severity: 'info',
+
+    setViewingAssignees([ordered[0]]);
+  };
+
+  const toggleViewingAssignee = (targetCedula: string) => {
+    if (targetCedula === 'ABIERTA') {
+      setViewingAssignees(['ABIERTA']);
+      return;
+    }
+    setViewingAssignees(prev => {
+      const withoutOpen = prev.filter(c => c !== 'ABIERTA');
+      if (withoutOpen.includes(targetCedula)) {
+        return withoutOpen.filter(c => c !== targetCedula);
+      }
+      return [...withoutOpen, targetCedula];
     });
   };
 
@@ -1102,30 +1163,100 @@ export const UserViews: React.FC<UserViewsProps> = ({
                 </div>
               </div>
 
-              {/* Selector de Encargado o Tarea Abierta */}
+              {/* Selector de Encargado */}
               <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-2">
-                <label className="block text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
-                  Encargado de la Tarea (Asignar a cualquiera o dejar Abierta)
-                </label>
-                <select
-                  value={viewingTask.assignedToCedula || 'ABIERTA'}
-                  onChange={e => handleChangeTaskAssignee(viewingTask, e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl focus:outline-none focus:border-[#0B2559]"
-                >
-                  <option value="ABIERTA">
-                    🌐 ABIERTA — Cualquiera puede realizarla
-                  </option>
-                  <option value={currentUser.cedula}>
-                    👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
-                  </option>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-[11px] font-bold text-[#0B2559] uppercase tracking-wider">
+                    Encargado de la Tarea
+                  </label>
+                  {(viewingAssignees.length > 1 ||
+                    (viewingAssignees.length === 1 &&
+                      viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA'))) && (
+                    <button
+                      type="button"
+                      onClick={() => handleApplyViewingAssignees(viewingTask, viewingAssignees)}
+                      className="px-2.5 py-1 rounded-lg bg-[#0B2559] text-white text-[10px] font-bold hover:bg-[#15397A] transition-colors"
+                    >
+                      Guardar
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-40 overflow-y-auto border border-[#B3D9FF] rounded-xl bg-white divide-y divide-[#F4F9FF]">
+                  <button
+                    type="button"
+                    onClick={() => toggleViewingAssignee('ABIERTA')}
+                    className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                      viewingAssignees.includes('ABIERTA')
+                        ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                        : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                        viewingAssignees.includes('ABIERTA')
+                          ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                          : 'bg-white border-[#B3D9FF] text-transparent'
+                      }`}
+                    >
+                      <i className="fi fi-rr-check text-[9px]" />
+                    </span>
+                    <span className="truncate">🌐 ABIERTA — Cualquiera puede realizarla</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => toggleViewingAssignee(currentUser.cedula)}
+                    className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                      viewingAssignees.includes(currentUser.cedula)
+                        ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                        : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                        viewingAssignees.includes(currentUser.cedula)
+                          ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                          : 'bg-white border-[#B3D9FF] text-transparent'
+                      }`}
+                    >
+                      <i className="fi fi-rr-check text-[9px]" />
+                    </span>
+                    <span className="truncate">
+                      👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
+                    </span>
+                  </button>
+
                   {users
                     .filter(u => u.cedula !== currentUser.cedula)
-                    .map(u => (
-                      <option key={u.cedula} value={u.cedula}>
-                        👥 {u.name} (C.C. {u.cedula})
-                      </option>
-                    ))}
-                </select>
+                    .map(u => {
+                      const isSelected = viewingAssignees.includes(u.cedula);
+                      return (
+                        <button
+                          key={u.cedula}
+                          type="button"
+                          onClick={() => toggleViewingAssignee(u.cedula)}
+                          className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                            isSelected
+                              ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                              : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                          }`}
+                        >
+                          <span
+                            className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                              isSelected
+                                ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                                : 'bg-white border-[#B3D9FF] text-transparent'
+                            }`}
+                          >
+                            <i className="fi fi-rr-check text-[9px]" />
+                          </span>
+                          <span className="truncate">
+                            👥 {u.name} (C.C. {u.cedula})
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
               </div>
 
               {/* Datos de la Tarea (Prioridad, Fechas, Responsable) */}
@@ -1234,7 +1365,16 @@ export const UserViews: React.FC<UserViewsProps> = ({
               )}
               <button
                 type="button"
-                onClick={() => setViewingTask(null)}
+                onClick={async () => {
+                  if (
+                    viewingAssignees.length > 1 ||
+                    (viewingAssignees.length === 1 &&
+                      viewingAssignees[0] !== (viewingTask.assignedToCedula || 'ABIERTA'))
+                  ) {
+                    await handleApplyViewingAssignees(viewingTask, viewingAssignees);
+                  }
+                  setViewingTask(null);
+                }}
                 className="min-h-[40px] px-5 py-2 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-xl transition-colors"
               >
                 Cerrar Vista

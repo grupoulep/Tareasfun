@@ -27,7 +27,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [progress, setProgress] = useState(0);
   const [tags, setTags] = useState('');
   const [category, setCategory] = useState('Operaciones');
-  const [assignedToCedula, setAssignedToCedula] = useState('');
+  const [assignedToCedulas, setAssignedToCedulas] = useState<string[]>([]);
   const [dueDate, setDueDate] = useState('');
   const [dueTime, setDueTime] = useState('17:00');
   const [notes, setNotes] = useState('');
@@ -53,7 +53,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setProgress(initialTask.progress);
       setTags(initialTask.tags);
       setCategory(initialTask.category || 'Operaciones');
-      setAssignedToCedula(initialTask.assignedToCedula);
+      setAssignedToCedulas([initialTask.assignedToCedula || currentUser.cedula]);
       const dt = initialTask.dueDate ? new Date(initialTask.dueDate) : new Date(Date.now() + 24 * 3600 * 1000);
       setDueDate(dt.toISOString().split('T')[0]);
       setDueTime(dt.toTimeString().slice(0, 5));
@@ -74,7 +74,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           setProgress(parsed.progress ?? 0);
           setTags(parsed.tags ?? 'Operativo, Entrega');
           setCategory(parsed.category ?? 'Operaciones');
-          setAssignedToCedula(parsed.assignedToCedula || currentUser.cedula);
+          if (Array.isArray(parsed.assignedToCedulas) && parsed.assignedToCedulas.length > 0) {
+            setAssignedToCedulas(parsed.assignedToCedulas);
+          } else if (parsed.assignedToCedula) {
+            setAssignedToCedulas([parsed.assignedToCedula]);
+          } else {
+            setAssignedToCedulas([currentUser.cedula]);
+          }
           setDueDate(parsed.dueDate || tomorrow.toISOString().split('T')[0]);
           setDueTime(parsed.dueTime || '17:00');
           setNotes(parsed.notes ?? '');
@@ -89,7 +95,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           setProgress(0);
           setTags('Operativo, Entrega');
           setCategory('Operaciones');
-          setAssignedToCedula(currentUser.cedula);
+          setAssignedToCedulas([currentUser.cedula]);
           setDueDate(tomorrow.toISOString().split('T')[0]);
           setDueTime('17:00');
           setNotes('');
@@ -105,7 +111,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         setProgress(0);
         setTags('Operativo, Entrega');
         setCategory('Operaciones');
-        setAssignedToCedula(currentUser.cedula);
+        setAssignedToCedulas([currentUser.cedula]);
         setDueDate(tomorrow.toISOString().split('T')[0]);
         setDueTime('17:00');
         setNotes('');
@@ -134,7 +140,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           progress,
           tags,
           category,
-          assignedToCedula,
+          assignedToCedulas,
           dueDate,
           dueTime,
           notes,
@@ -156,7 +162,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     progress,
     tags,
     category,
-    assignedToCedula,
+    assignedToCedulas,
     dueDate,
     dueTime,
     notes,
@@ -175,6 +181,20 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     setTimeout(() => setCopiedField(null), 1800);
   };
 
+  const toggleUserAssignee = (targetCedula: string) => {
+    if (targetCedula === 'ABIERTA') {
+      setAssignedToCedulas(['ABIERTA']);
+      return;
+    }
+    setAssignedToCedulas(prev => {
+      const withoutOpen = prev.filter(c => c !== 'ABIERTA');
+      if (withoutOpen.includes(targetCedula)) {
+        return withoutOpen.filter(c => c !== targetCedula);
+      }
+      return [...withoutOpen, targetCedula];
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
@@ -183,38 +203,62 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     }
     setSaving(true);
     try {
-      const isOpenTask = assignedToCedula === 'ABIERTA';
-      const assignedUser = isOpenTask
-        ? null
-        : users.find(u => u.cedula === assignedToCedula) || currentUser;
+      const effectiveCedulas =
+        assignedToCedulas.length > 0 ? assignedToCedulas : [currentUser.cedula];
       const combinedDue = new Date(`${dueDate}T${dueTime || '17:00'}:00`).toISOString();
       const computedProgress = status === 'completada' ? 100 : progress;
+      const nowIso = new Date().toISOString();
 
-      const taskObj: TaskItem = {
-        id: initialTask?.id || cleanId(`task_${Date.now()}`),
-        title: title.trim(),
-        description: description.trim(),
-        priority,
-        status,
-        progress: computedProgress,
-        tags: tags.trim(),
-        category: category.trim() || 'Operaciones',
-        assignedToCedula: isOpenTask ? 'ABIERTA' : assignedUser!.cedula,
-        assignedToName: isOpenTask
-          ? 'Abierta (Cualquiera puede realizarla)'
-          : assignedUser!.name,
-        createdByCedula: initialTask?.createdByCedula || currentUser.cedula,
-        createdByName: initialTask?.createdByName || currentUser.name,
-        createdAt: initialTask?.createdAt || new Date().toISOString(),
-        dueDate: combinedDue,
-        completedAt: status === 'completada' ? (initialTask?.completedAt || new Date().toISOString()) : '',
-        notes: notes.trim(),
-        accessEmail: accessEmail.trim(),
-        accessPassword: accessPassword.trim(),
-        directLink: directLink.trim(),
-      };
+      const orderedCedulas =
+        initialTask && effectiveCedulas.includes(initialTask.assignedToCedula)
+          ? [
+              initialTask.assignedToCedula,
+              ...effectiveCedulas.filter(c => c !== initialTask.assignedToCedula),
+            ]
+          : effectiveCedulas;
 
-      await onSave(taskObj);
+      for (let i = 0; i < orderedCedulas.length; i++) {
+        const targetCedula = orderedCedulas[i];
+        const isOpenTask = targetCedula === 'ABIERTA';
+        const assignedUser = isOpenTask
+          ? null
+          : users.find(u => u.cedula === targetCedula) || currentUser;
+
+        const taskId =
+          i === 0 && initialTask?.id
+            ? initialTask.id
+            : cleanId(`task_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`);
+
+        const taskObj: TaskItem = {
+          id: taskId,
+          title: title.trim(),
+          description: description.trim(),
+          priority,
+          status,
+          progress: computedProgress,
+          tags: tags.trim(),
+          category: category.trim() || 'Operaciones',
+          assignedToCedula: isOpenTask ? 'ABIERTA' : assignedUser!.cedula,
+          assignedToName: isOpenTask
+            ? 'Abierta (Cualquiera puede realizarla)'
+            : assignedUser!.name,
+          createdByCedula: initialTask?.createdByCedula || currentUser.cedula,
+          createdByName: initialTask?.createdByName || currentUser.name,
+          createdAt: i === 0 && initialTask?.createdAt ? initialTask.createdAt : nowIso,
+          dueDate: combinedDue,
+          completedAt:
+            status === 'completada'
+              ? (i === 0 && initialTask?.completedAt) || nowIso
+              : '',
+          notes: notes.trim(),
+          accessEmail: accessEmail.trim(),
+          accessPassword: accessPassword.trim(),
+          directLink: directLink.trim(),
+        };
+
+        await onSave(taskObj);
+      }
+
       try {
         sessionStorage.removeItem(DRAFT_STORAGE_KEY);
       } catch {
@@ -227,9 +271,18 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   };
 
   const assignedLabel =
-    assignedToCedula === 'ABIERTA'
+    assignedToCedulas.includes('ABIERTA')
       ? 'ABIERTA (Cualquiera)'
-      : users.find(u => u.cedula === assignedToCedula)?.name || currentUser.name;
+      : assignedToCedulas.length === 0
+      ? currentUser.name
+      : assignedToCedulas
+          .map(
+            ced =>
+              (ced === currentUser.cedula
+                ? currentUser.name
+                : users.find(u => u.cedula === ced)?.name) || ced
+          )
+          .join(', ');
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0B2559]/70 sm:p-4 overflow-y-auto">
@@ -333,45 +386,99 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 className="sm:col-span-2"
               >
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-[#3B82F6] font-semibold">
-                      Selecciona un usuario o déjala abierta para que cualquiera la realice:
-                    </span>
+                  <div className="flex justify-end">
                     <button
                       type="button"
                       onClick={() =>
-                        setAssignedToCedula(prev =>
-                          prev === 'ABIERTA' ? currentUser.cedula : 'ABIERTA'
+                        setAssignedToCedulas(prev =>
+                          prev.includes('ABIERTA') ? [currentUser.cedula] : ['ABIERTA']
                         )
                       }
                       className={`text-[10px] font-bold px-2.5 py-1 rounded-md border transition-colors ${
-                        assignedToCedula === 'ABIERTA'
+                        assignedToCedulas.includes('ABIERTA')
                           ? 'bg-emerald-600 text-white border-emerald-600'
                           : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#B3D9FF]'
                       }`}
                     >
-                      {assignedToCedula === 'ABIERTA' ? '✓ Abierta a todos' : 'Dejar Abierta'}
+                      {assignedToCedulas.includes('ABIERTA') ? '✓ Abierta a todos' : 'Dejar Abierta'}
                     </button>
                   </div>
-                  <select
-                    value={assignedToCedula}
-                    onChange={e => setAssignedToCedula(e.target.value)}
-                    className="w-full px-3 py-2 text-xs text-[#0B2559] border border-[#B3D9FF] rounded-lg bg-white focus:outline-none focus:border-[#0B2559] font-medium"
-                  >
-                    <option value="ABIERTA">
-                      🌐 ABIERTA — Cualquiera puede realizarla
-                    </option>
-                    <option value={currentUser.cedula}>
-                      👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
-                    </option>
+                  <div className="max-h-48 overflow-y-auto border border-[#B3D9FF] rounded-lg bg-white divide-y divide-[#F4F9FF]">
+                    <button
+                      type="button"
+                      onClick={() => toggleUserAssignee('ABIERTA')}
+                      className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                        assignedToCedulas.includes('ABIERTA')
+                          ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                          : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                      }`}
+                    >
+                      <span
+                        className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                          assignedToCedulas.includes('ABIERTA')
+                            ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                            : 'bg-white border-[#B3D9FF] text-transparent'
+                        }`}
+                      >
+                        <i className="fi fi-rr-check text-[9px]" />
+                      </span>
+                      <span className="truncate">🌐 ABIERTA — Cualquiera puede realizarla</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => toggleUserAssignee(currentUser.cedula)}
+                      className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                        assignedToCedulas.includes(currentUser.cedula)
+                          ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                          : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                      }`}
+                    >
+                      <span
+                        className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                          assignedToCedulas.includes(currentUser.cedula)
+                            ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                            : 'bg-white border-[#B3D9FF] text-transparent'
+                        }`}
+                      >
+                        <i className="fi fi-rr-check text-[9px]" />
+                      </span>
+                      <span className="truncate">
+                        👤 Asignarme a mí: {currentUser.name} (C.C. {currentUser.cedula})
+                      </span>
+                    </button>
+
                     {users
                       .filter(u => u.cedula !== currentUser.cedula)
-                      .map(u => (
-                        <option key={u.cedula} value={u.cedula}>
-                          👥 {u.name} (C.C. {u.cedula}) — {u.department || 'General'}
-                        </option>
-                      ))}
-                  </select>
+                      .map(u => {
+                        const isSelected = assignedToCedulas.includes(u.cedula);
+                        return (
+                          <button
+                            key={u.cedula}
+                            type="button"
+                            onClick={() => toggleUserAssignee(u.cedula)}
+                            className={`w-full px-3 py-2 text-left text-xs flex items-center gap-2.5 transition-colors ${
+                              isSelected
+                                ? 'bg-[#EAF3FF] text-[#0B2559] font-bold'
+                                : 'text-[#0B2559] hover:bg-[#F4F9FF] font-medium'
+                            }`}
+                          >
+                            <span
+                              className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                                isSelected
+                                  ? 'bg-[#0B2559] border-[#0B2559] text-white'
+                                  : 'bg-white border-[#B3D9FF] text-transparent'
+                              }`}
+                            >
+                              <i className="fi fi-rr-check text-[9px]" />
+                            </span>
+                            <span className="truncate">
+                              👥 {u.name} (C.C. {u.cedula}) — {u.department || 'General'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
                 </div>
               </CollapsibleField>
 

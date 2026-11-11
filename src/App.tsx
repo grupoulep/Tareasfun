@@ -73,10 +73,21 @@ export default function App() {
   const [loggedCedula, setLoggedCedula] = useState<string | null>(() => {
     return localStorage.getItem('taskflow_active_cedula');
   });
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'recover'>('login');
   const [loginCedulaInput, setLoginCedulaInput] = useState('');
   const [loginPasswordInput, setLoginPasswordInput] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginSuccessMsg, setLoginSuccessMsg] = useState<string | null>(null);
+
+  // Estados para Recuperar Contraseña
+  const [recoverStep, setRecoverStep] = useState<'cedula' | 'verify'>('cedula');
+  const [recoverCedula, setRecoverCedula] = useState('');
+  const [recoverCodeInput, setRecoverCodeInput] = useState('');
+  const [recoverNewPassword, setRecoverNewPassword] = useState('');
+  const [recoverConfirmPassword, setRecoverConfirmPassword] = useState('');
+  const [recoverMaskedEmail, setRecoverMaskedEmail] = useState('funda....');
+  const [recoverLoading, setRecoverLoading] = useState(false);
+  const [recoverError, setRecoverError] = useState<string | null>(null);
 
   // Estados para el formulario completo de Registro al inicio con listas desplegables
   const [regCedula, setRegCedula] = useState('');
@@ -373,6 +384,136 @@ export default function App() {
     }
   };
 
+  const handleRequestRecoveryCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoverError(null);
+    const cleanCed = recoverCedula.trim();
+    const targetUser = users.find(u => u.cedula === cleanCed);
+
+    if (!targetUser) {
+      setRecoverError('No se encontró ningún usuario registrado con ese número de cédula.');
+      return;
+    }
+
+    const userRegisteredEmail = (targetUser.email || '').trim();
+    if (!userRegisteredEmail || !userRegisteredEmail.includes('@')) {
+      setRecoverError('Este usuario no tiene un correo electrónico válido registrado en su ficha.');
+      return;
+    }
+
+    setRecoverLoading(true);
+    try {
+      const response = await fetch('/api/resend/send-recovery-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cedula: targetUser.cedula,
+          userName: targetUser.name,
+          userEmail: userRegisteredEmail,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setRecoverError(data.error || 'No se pudo enviar el código de recuperación.');
+        return;
+      }
+
+      const localPart = userRegisteredEmail.split('@')[0] || userRegisteredEmail;
+      const fallbackMask = `${localPart.slice(0, Math.min(5, Math.max(3, Math.floor(localPart.length / 2))))}....`;
+      setRecoverMaskedEmail(data.maskedEmail || fallbackMask);
+      setRecoverCodeInput('');
+      setRecoverNewPassword('');
+      setRecoverConfirmPassword('');
+      setRecoverStep('verify');
+    } catch {
+      setRecoverError('Error de conexión al enviar el código.');
+    } finally {
+      setRecoverLoading(false);
+    }
+  };
+
+  const handleVerifyAndResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoverError(null);
+
+    const cleanCed = recoverCedula.trim();
+    const targetUser = users.find(u => u.cedula === cleanCed);
+    if (!targetUser) {
+      setRecoverError('Usuario no encontrado.');
+      return;
+    }
+
+    if (!recoverCodeInput.trim()) {
+      setRecoverError('Ingresa el código enviado al correo.');
+      return;
+    }
+
+    if (recoverNewPassword.trim().length < 4) {
+      setRecoverError('La nueva contraseña debe tener al menos 4 caracteres.');
+      return;
+    }
+
+    if (recoverNewPassword.trim() !== recoverConfirmPassword.trim()) {
+      setRecoverError('Las contraseñas no coinciden.');
+      return;
+    }
+
+    setRecoverLoading(true);
+    try {
+      const response = await fetch('/api/resend/verify-recovery-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cedula: cleanCed,
+          code: recoverCodeInput.trim(),
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.valid) {
+        setRecoverError(data.error || 'El código ingresado es incorrecto o ha expirado.');
+        return;
+      }
+
+      const newPwd = recoverNewPassword.trim();
+      if (targetUser.cedula === SINGLE_ADMIN_CEDULA) {
+        try {
+          localStorage.setItem('taskflow_single_admin_pwd', newPwd);
+        } catch {
+          // ignore
+        }
+      }
+
+      await saveUserToFirestore({
+        ...targetUser,
+        password: newPwd,
+      });
+
+      await recordAuditLog({
+        actorCedula: targetUser.cedula,
+        actorName: targetUser.name,
+        actorRole: targetUser.role,
+        actionType: 'RECUPERACION_CONTRASENA',
+        module: 'AUTENTICACION_CEDULA',
+        description: `Actualizó su contraseña mediante código de recuperación validado.`,
+        targetId: targetUser.cedula,
+        severity: 'warning',
+      });
+
+      setLoginCedulaInput(targetUser.cedula);
+      setLoginPasswordInput('');
+      setLoginError(null);
+      setLoginSuccessMsg('Contraseña actualizada correctamente. Ya puedes iniciar sesión.');
+      setAuthMode('login');
+      setRecoverStep('cedula');
+    } catch {
+      setRecoverError('No se pudo validar el código en este momento.');
+    } finally {
+      setRecoverLoading(false);
+    }
+  };
+
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegError(null);
@@ -604,12 +745,35 @@ export default function App() {
                       className="w-full min-h-[44px] pl-10 pr-4 py-2.5 text-sm font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559] transition-colors"
                     />
                   </div>
+                  <div className="mt-1.5 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('recover');
+                        setRecoverStep('cedula');
+                        setRecoverCedula(loginCedulaInput);
+                        setRecoverError(null);
+                        setLoginError(null);
+                        setLoginSuccessMsg(null);
+                      }}
+                      className="text-xs font-semibold text-[#3B82F6] hover:text-[#0B2559] hover:underline transition-colors text-right"
+                    >
+                      Recuperar contraseña
+                    </button>
+                  </div>
                 </div>
 
                 {loginError && (
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium flex items-center gap-2">
                     <i className="fi fi-rr-exclamation text-sm text-rose-600 shrink-0" />
                     <span>{loginError}</span>
+                  </div>
+                )}
+
+                {loginSuccessMsg && (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-bold flex items-center gap-2">
+                    <i className="fi fi-rr-check-circle text-sm text-emerald-600 shrink-0" />
+                    <span>{loginSuccessMsg}</span>
                   </div>
                 )}
 
@@ -627,6 +791,7 @@ export default function App() {
                       setAuthMode('register');
                       setRegMobileStep(1);
                       setLoginError(null);
+                      setLoginSuccessMsg(null);
                     }}
                     className="w-full min-h-[44px] py-2.5 px-4 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#F4F9FF] transition-colors flex items-center justify-center gap-2"
                   >
@@ -634,6 +799,138 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            ) : authMode === 'recover' ? (
+              recoverStep === 'cedula' ? (
+                <form onSubmit={handleRequestRecoveryCode} className="space-y-4">
+                  <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-bold text-[#0B2559] flex items-center gap-2">
+                    <i className="fi fi-rr-key text-sm text-[#3B82F6]" />
+                    <span>Recuperar Contraseña</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#0B2559] mb-1.5">
+                      Número de Cédula
+                    </label>
+                    <div className="relative">
+                      <i className="fi fi-rr-id-card-clip-alt text-sm text-[#3B82F6] absolute left-3.5 top-3" />
+                      <input
+                        type="text"
+                        required
+                        value={recoverCedula}
+                        onChange={e => setRecoverCedula(e.target.value)}
+                        placeholder="Ingresa tu número de cédula"
+                        className="w-full min-h-[44px] pl-10 pr-4 py-2.5 text-sm font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                      />
+                    </div>
+                  </div>
+
+                  {recoverError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium flex items-center gap-2">
+                      <i className="fi fi-rr-exclamation text-sm text-rose-600 shrink-0" />
+                      <span>{recoverError}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="submit"
+                      disabled={recoverLoading}
+                      className="w-full min-h-[44px] py-3 px-4 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-xl hover:bg-[#99CCFF] transition-colors flex items-center justify-center gap-2 shadow-2xs disabled:opacity-50"
+                    >
+                      <i className="fi fi-rr-envelope text-xs" />
+                      <span>{recoverLoading ? 'Enviando código...' : 'Enviar Código'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        setRecoverError(null);
+                      }}
+                      className="w-full min-h-[44px] py-2.5 px-4 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#F4F9FF] transition-colors flex items-center justify-center gap-2"
+                    >
+                      ← Volver a Iniciar Sesión
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyAndResetPassword} className="space-y-4">
+                  <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-bold text-[#0B2559] text-center">
+                    Digite el código enviado al correo <span className="font-mono text-[#3B82F6]">{recoverMaskedEmail}</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#0B2559] mb-1.5">
+                      Código de Verificación
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={recoverCodeInput}
+                      onChange={e => setRecoverCodeInput(e.target.value)}
+                      placeholder="000000"
+                      className="w-full min-h-[44px] px-4 py-2.5 text-center text-base font-mono font-bold tracking-widest text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#0B2559] mb-1.5">
+                      Nueva Contraseña
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={recoverNewPassword}
+                      onChange={e => setRecoverNewPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full min-h-[44px] px-4 py-2.5 text-sm font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#0B2559] mb-1.5">
+                      Confirmar Nueva Contraseña
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={recoverConfirmPassword}
+                      onChange={e => setRecoverConfirmPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full min-h-[44px] px-4 py-2.5 text-sm font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                    />
+                  </div>
+
+                  {recoverError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium flex items-center gap-2">
+                      <i className="fi fi-rr-exclamation text-sm text-rose-600 shrink-0" />
+                      <span>{recoverError}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="submit"
+                      disabled={recoverLoading}
+                      className="w-full min-h-[44px] py-3 px-4 text-xs font-bold text-[#0B2559] bg-[#B3D9FF] rounded-xl hover:bg-[#99CCFF] transition-colors flex items-center justify-center gap-2 shadow-2xs disabled:opacity-50"
+                    >
+                      <i className="fi fi-rr-check text-xs" />
+                      <span>{recoverLoading ? 'Validando...' : 'Guardar Nueva Contraseña'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoverStep('cedula');
+                        setRecoverError(null);
+                      }}
+                      className="w-full min-h-[44px] py-2.5 px-4 text-xs font-bold text-[#0B2559] bg-white border border-[#B3D9FF] rounded-xl hover:bg-[#F4F9FF] transition-colors flex items-center justify-center gap-2"
+                    >
+                      ← Cambiar Cédula / Reenviar Código
+                    </button>
+                  </div>
+                </form>
+              )
             ) : (
               <form onSubmit={handleRegisterSubmit} className="space-y-4 max-h-[74vh] overflow-y-auto pr-1">
                 <div className="p-3 rounded-xl bg-[#EAF3FF] border border-[#B3D9FF] text-[11px] text-[#0B2559] flex items-center justify-between gap-2">

@@ -249,6 +249,26 @@ async function dispatchResendEmailForTask(
   }
 }
 
+let recoveryEmailRecipient = RESEND_EXCLUSIVE_RECIPIENT;
+
+interface RecoveryCodeEntry {
+  code: string;
+  cedula: string;
+  userName: string;
+  email: string;
+  createdAt: string;
+  expiresAt: number;
+}
+
+const activeRecoveryCodes = new Map<string, RecoveryCodeEntry>();
+
+function maskEmailStartOnly(email: string): string {
+  const clean = (email || RESEND_EXCLUSIVE_RECIPIENT).trim();
+  const localPart = clean.split('@')[0] || clean;
+  const visibleLen = Math.min(5, Math.max(3, Math.floor(localPart.length / 2)));
+  return `${localPart.slice(0, visibleLen)}....`;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -263,12 +283,144 @@ async function startServer() {
     res.json({
       connected: apiKeyConfigured,
       exclusiveRecipient: RESEND_EXCLUSIVE_RECIPIENT,
+      recoveryEmail: recoveryEmailRecipient,
+      maskedRecoveryEmail: maskEmailStartOnly(recoveryEmailRecipient),
       milestonesHours: ALERT_MILESTONES,
       fromEmail: (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim(),
       sentHistory: Array.from(sentNotificationsMap.values()).sort(
         (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
       ),
     });
+  });
+
+  app.get('/api/resend/recovery-config', (_req, res) => {
+    res.json({
+      recoveryEmail: recoveryEmailRecipient,
+      maskedEmail: maskEmailStartOnly(recoveryEmailRecipient),
+    });
+  });
+
+  app.post('/api/resend/recovery-config', (req, res) => {
+    const nextEmail = String(req.body?.recoveryEmail || '').trim();
+    if (nextEmail && nextEmail.includes('@')) {
+      recoveryEmailRecipient = nextEmail;
+    }
+    res.json({
+      ok: true,
+      recoveryEmail: recoveryEmailRecipient,
+      maskedEmail: maskEmailStartOnly(recoveryEmailRecipient),
+    });
+  });
+
+  app.post('/api/resend/send-recovery-code', async (req, res) => {
+    try {
+      const cedula = String(req.body?.cedula || '').trim();
+      const userName = String(req.body?.userName || 'Usuario').trim();
+      const userEmail = String(req.body?.userEmail || req.body?.recoveryEmailOverride || '').trim();
+
+      if (!cedula) {
+        return res.status(400).json({ error: 'Debes ingresar el número de cédula.' });
+      }
+
+      if (!userEmail || !userEmail.includes('@')) {
+        return res.status(400).json({
+          error: 'Este usuario no tiene un correo válido registrado en su ficha.',
+        });
+      }
+
+      const targetEmail = userEmail;
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const nowIso = new Date().toISOString();
+
+      activeRecoveryCodes.set(cedula, {
+        code,
+        cedula,
+        userName,
+        email: targetEmail,
+        createdAt: nowIso,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+
+      const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+      const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
+
+      let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
+
+      if (resendApiKey) {
+        const emailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+            <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+              <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
+            </div>
+            <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
+              <p style="font-size: 14px; margin-top: 0;">Solicitud de recuperación para <strong>${userName}</strong> (C.C. ${cedula})</p>
+              <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
+                ${code}
+              </div>
+              <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
+            </div>
+          </div>
+        `;
+
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromEmail,
+            to: [targetEmail],
+            subject: `Código de Recuperación de Contraseña: ${code} — Fundación ULEP`,
+            text: `Código de recuperación de contraseña para ${userName} (C.C. ${cedula}): ${code}`,
+            html: emailHtml,
+          }),
+        });
+
+        emailStatus = response.ok ? 'sent' : 'error';
+      }
+
+      return res.json({
+        ok: true,
+        status: emailStatus,
+        maskedEmail: maskEmailStartOnly(targetEmail),
+      });
+    } catch (error: unknown) {
+      return res.status(500).json({
+        error: error instanceof Error ? error.message : 'No se pudo enviar el código de recuperación.',
+      });
+    }
+  });
+
+  app.post('/api/resend/verify-recovery-code', (req, res) => {
+    const cedula = String(req.body?.cedula || '').trim();
+    const code = String(req.body?.code || '').trim();
+
+    const entry = activeRecoveryCodes.get(cedula);
+    if (!entry) {
+      return res.status(400).json({
+        valid: false,
+        error: 'El código ingresado no es válido o ha expirado.',
+      });
+    }
+
+    if (Date.now() > entry.expiresAt) {
+      activeRecoveryCodes.delete(cedula);
+      return res.status(400).json({
+        valid: false,
+        error: 'El código ha expirado. Solicita uno nuevo.',
+      });
+    }
+
+    if (entry.code !== code) {
+      return res.status(400).json({
+        valid: false,
+        error: 'El código ingresado es incorrecto.',
+      });
+    }
+
+    activeRecoveryCodes.delete(cedula);
+    return res.json({ valid: true });
   });
 
   app.post('/api/resend/check-and-notify', async (req, res) => {

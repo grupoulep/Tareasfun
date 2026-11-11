@@ -72,7 +72,7 @@ type AdminUsersScreen = 'directory' | 'create' | 'permissions' | 'security';
 type CreateUserStepScreen = 'personal' | 'residence' | 'family' | 'bank';
 type FichaSubScreen = 'personal' | 'residence' | 'family' | 'bank' | 'all';
 type BackupScreen = 'export' | 'import' | 'template';
-type ResendScreen = 'expiring_24h' | 'history';
+type ResendScreen = 'expiring_24h' | 'history' | 'recovery_config';
 
 export const AdminViews: React.FC<AdminViewsProps> = ({
   activeSection,
@@ -163,9 +163,39 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Estados exclusivos del Panel Admin para el módulo de correos automáticos Resend (24h, 12h, 6h y 2h)
+  // Estados exclusivos del Panel Admin para el módulo de correos automáticos Resend (24h, 12h, 6h y 2h) y edición de correos de recuperación por usuario
   const [resendScreen, setResendScreen] = useState<ResendScreen>('expiring_24h');
   const [resendHistory, setResendHistory] = useState<ResendSentRecord[]>([]);
+  const [userRecoveryEmails, setUserRecoveryEmails] = useState<Record<string, string>>({});
+  const [recoveryConfigSavedMsg, setRecoveryConfigSavedMsg] = useState<string | null>(null);
+
+  const handleSaveUserRecoveryEmail = async (targetUser: AppUser) => {
+    const draftEmail = (
+      userRecoveryEmails[targetUser.cedula] !== undefined
+        ? userRecoveryEmails[targetUser.cedula]
+        : targetUser.email || ''
+    ).trim();
+    if (!draftEmail || !draftEmail.includes('@')) return;
+
+    await saveUserToFirestore({
+      ...targetUser,
+      email: draftEmail,
+    });
+
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'ACTUALIZAR_CORREO_RECUPERACION',
+      module: 'SEGURIDAD_USUARIOS',
+      description: `Actualizó el correo de recuperación de ${targetUser.name} (C.C. ${targetUser.cedula}) a ${draftEmail}.`,
+      targetId: targetUser.cedula,
+      severity: 'info',
+    });
+
+    setRecoveryConfigSavedMsg(`Correo de ${targetUser.name} actualizado a: ${draftEmail}`);
+    setTimeout(() => setRecoveryConfigSavedMsg(null), 3500);
+  };
 
   useEffect(() => {
     if (activeSection !== 'admin_resend') return;
@@ -1863,6 +1893,77 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 </button>
               </div>
             </form>
+
+            {/* Edición de Correos de Recuperación de Contraseña de Cada Usuario (Panel Admin) */}
+            <div className="pt-4 border-t border-[#D6EAFF] space-y-3">
+              <div>
+                <h4 className="text-xs font-bold text-[#0B2559] flex items-center gap-1.5">
+                  <i className="fi fi-rr-envelope text-xs text-[#3B82F6]" />
+                  <span>Correos de Recuperación de Contraseña por Usuario</span>
+                </h4>
+                <p className="text-[11px] text-[#3B82F6]">
+                  El código de recuperación se envía al correo registrado de cada usuario y muestra en pantalla únicamente el inicio de su correo.
+                </p>
+              </div>
+
+              {recoveryConfigSavedMsg && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+                  ✓ {recoveryConfigSavedMsg}
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {users.map(u => {
+                  const currentVal =
+                    userRecoveryEmails[u.cedula] !== undefined
+                      ? userRecoveryEmails[u.cedula]
+                      : u.email || '';
+                  const localPart = (currentVal || 'usuario').split('@')[0] || 'usuario';
+                  const maskedPreview = `${localPart.slice(
+                    0,
+                    Math.min(5, Math.max(3, Math.floor(localPart.length / 2)))
+                  )}....`;
+
+                  return (
+                    <div
+                      key={u.cedula}
+                      className="p-2.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-[#0B2559] truncate">
+                          {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                        </div>
+                        <div className="text-[10px] text-[#3B82F6]">
+                          Se muestra al usuario: <strong className="font-mono text-[#0B2559]">{maskedPreview}</strong>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 sm:w-80">
+                        <input
+                          type="email"
+                          value={currentVal}
+                          onChange={e =>
+                            setUserRecoveryEmails(prev => ({
+                              ...prev,
+                              [u.cedula]: e.target.value,
+                            }))
+                          }
+                          placeholder="correo@ejemplo.com"
+                          className="flex-1 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-white border border-[#B3D9FF] rounded-lg focus:outline-none focus:border-[#0B2559]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveUserRecoveryEmail(u)}
+                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-lg transition-colors shrink-0"
+                        >
+                          Guardar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </section>
         )}
 
@@ -2536,6 +2637,18 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               <i className="fi fi-rr-time-past text-xs" />
               <span>Pantalla 2: Historial de Correos Automáticos ({resendHistory.length})</span>
             </button>
+            <button
+              type="button"
+              onClick={() => setResendScreen('recovery_config')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors ${
+                resendScreen === 'recovery_config'
+                  ? 'bg-[#0B2559] text-white shadow-2xs'
+                  : 'bg-[#F4F9FF] text-[#0B2559] border border-[#D6EAFF] hover:bg-[#EAF3FF]'
+              }`}
+            >
+              <i className="fi fi-rr-key text-xs" />
+              <span>Pantalla 3: Correo de Recuperación de Contraseña</span>
+            </button>
           </div>
 
           <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2">
@@ -2577,7 +2690,76 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             ))}
           </div>
 
-          {resendScreen === 'expiring_24h' ? (
+          {resendScreen === 'recovery_config' ? (
+            <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] space-y-3">
+              <div>
+                <h3 className="text-xs font-bold text-[#0B2559]">
+                  Correos Registrados por Usuario para Recuperación de Contraseña
+                </h3>
+                <p className="text-[11px] text-[#3B82F6] mt-0.5">
+                  El código de recuperación se envía al correo registrado en la ficha de cada usuario, mostrando en la pantalla únicamente la parte inicial de su correo.
+                </p>
+              </div>
+
+              {recoveryConfigSavedMsg && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+                  ✓ {recoveryConfigSavedMsg}
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {users.map(u => {
+                  const currentVal =
+                    userRecoveryEmails[u.cedula] !== undefined
+                      ? userRecoveryEmails[u.cedula]
+                      : u.email || '';
+                  const localPart = (currentVal || 'usuario').split('@')[0] || 'usuario';
+                  const maskedPreview = `${localPart.slice(
+                    0,
+                    Math.min(5, Math.max(3, Math.floor(localPart.length / 2)))
+                  )}....`;
+
+                  return (
+                    <div
+                      key={u.cedula}
+                      className="p-2.5 rounded-xl bg-white border border-[#D6EAFF] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-[#0B2559] truncate">
+                          {u.name} <span className="font-mono text-[#3B82F6]">(C.C. {u.cedula})</span>
+                        </div>
+                        <div className="text-[10px] text-[#3B82F6]">
+                          Vista al recuperar: <strong className="font-mono text-[#0B2559]">Digite el código enviado al correo {maskedPreview}</strong>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 sm:w-80">
+                        <input
+                          type="email"
+                          value={currentVal}
+                          onChange={e =>
+                            setUserRecoveryEmails(prev => ({
+                              ...prev,
+                              [u.cedula]: e.target.value,
+                            }))
+                          }
+                          placeholder="correo@ejemplo.com"
+                          className="flex-1 px-3 py-1.5 text-xs font-mono text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-lg focus:bg-white focus:outline-none focus:border-[#0B2559]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveUserRecoveryEmail(u)}
+                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] rounded-lg transition-colors shrink-0"
+                        >
+                          Guardar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : resendScreen === 'expiring_24h' ? (
             <div className="space-y-2.5">
               {tasksExpiringIn24h.length === 0 ? (
                 <div className="p-6 text-center bg-[#F4F9FF] border border-[#D6EAFF] rounded-xl space-y-1">
