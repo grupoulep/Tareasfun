@@ -279,7 +279,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
       <div className="bg-white w-full h-full flex flex-col overflow-hidden animate-fadeIn">
         {/* Modal Header en Toda la Pantalla */}
         <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">

@@ -10,6 +10,7 @@ import {
   writeRecoverySecurityState,
   RECOVERY_SECURITY_STORAGE_KEY,
   RecoverySecurityEntry,
+  callResendApi,
 } from '../firebase';
 import {
   generateAuditAndTasksPDF,
@@ -229,12 +230,11 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
     setDeleteAuditLoading(true);
     try {
-      const resp = await fetch('/api/resend/audit-delete/send-code-1', {
+      const { ok: respOk, data } = await callResendApi('/api/resend/audit-delete/send-code-1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const data = await resp.json();
-      if (!resp.ok || !data?.ok) {
+      if (!respOk || !data?.ok) {
         setDeleteAuditError(data?.error || 'No se pudo enviar el primer código a fundacionulep@gmail.com.');
         setDeleteAuditLoading(false);
         return;
@@ -259,13 +259,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
     setDeleteAuditLoading(true);
     try {
-      const resp = await fetch('/api/resend/audit-delete/verify-code-1', {
+      const { ok: respOk, data } = await callResendApi('/api/resend/audit-delete/verify-code-1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: trimmedCode1 }),
       });
-      const data = await resp.json();
-      if (!resp.ok || !data?.valid) {
+      if (!respOk || !data?.valid) {
         setDeleteAuditError(data?.error || 'El código ingresado para fundacionulep@gmail.com no es válido.');
         setDeleteAuditLoading(false);
         return;
@@ -290,13 +289,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
     setDeleteAuditLoading(true);
     try {
-      const resp = await fetch('/api/resend/audit-delete/verify-code-2', {
+      const { ok: respOk, data } = await callResendApi('/api/resend/audit-delete/verify-code-2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: trimmedCode2 }),
       });
-      const data = await resp.json();
-      if (!resp.ok || !data?.valid) {
+      if (!respOk || !data?.valid) {
         setDeleteAuditError(data?.error || 'El código ingresado para jslopezren@gmail.com no coincide exactamente.');
         setDeleteAuditLoading(false);
         return;
@@ -427,7 +425,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
       locked: false,
     };
     try {
-      await fetch('/api/resend/unlock-user', {
+      await callResendApi('/api/resend/unlock-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cedula: targetUser.cedula }),
@@ -488,9 +486,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   };
 
   useEffect(() => {
-    fetch('/api/resend/recovery-config')
-      .then(r => r.json())
-      .then(data => {
+    callResendApi('/api/resend/recovery-config')
+      .then(({ data }) => {
         if (data?.securityStates && typeof data.securityStates === 'object') {
           setRecoverySecurityStates(prev => {
             const merged = { ...prev, ...data.securityStates };
@@ -514,13 +511,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
   useEffect(() => {
     if (activeSection !== 'admin_resend') return;
-    fetch('/api/resend/check-and-notify', {
+    callResendApi('/api/resend/check-and-notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks }),
     })
-      .then(r => r.json())
-      .then(data => {
+      .then(({ data }) => {
         if (Array.isArray(data?.sentHistory)) {
           setResendHistory(data.sentHistory);
         }
@@ -1412,7 +1408,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     </div>
 
                     {isExpanded && (
-                      <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
+                      <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
                         <div className="bg-[#0B2559] text-white px-5 sm:px-8 py-4 flex flex-wrap items-center justify-between gap-3 shrink-0 border-b border-[#1E40AF]">
                           <div className="flex items-center gap-3">
                             <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0">
@@ -2764,7 +2760,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   </div>
 
                   {isExpanded && (
-                    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
+                    <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
                       <div className="bg-[#0B2559] text-white px-5 sm:px-8 py-4 flex flex-wrap items-center justify-between gap-3 shrink-0 border-b border-[#1E40AF]">
                         <div className="flex items-center gap-3 min-w-0">
                           <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0">
@@ -3033,7 +3029,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   </div>
 
                   {isExpanded && (
-                    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
+                    <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden animate-in fade-in duration-150">
                       <div className="bg-[#0B2559] text-white px-5 sm:px-8 py-4 flex items-center justify-between gap-3 shrink-0 border-b border-[#1E40AF]">
                         <div className="flex items-center gap-3">
                           <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0">
@@ -3092,7 +3088,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
         {/* Modal de Verificación en 4 Pasos para Eliminar Todo el Registro de Auditoría (Pantalla Completa) */}
         {isDeleteAuditModalOpen && (
-          <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+          <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
             <div className="w-full h-full flex flex-col overflow-y-auto">
               <div className="bg-[#0B2559] text-white px-6 py-4 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2.5">
@@ -3716,8 +3712,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
       const userEventsCount = calendarEvents.filter(
         ev =>
           ev.createdByCedula === u.cedula &&
-          ev.id !== 'config_event_permissions' &&
-          ev.date !== 'CONFIG_PERMS' &&
+          !ev.id.startsWith('config_') &&
+          !ev.date.startsWith('CONFIG_') &&
           !ev.id.startsWith('ev_sync_')
       ).length;
       const userChatCount = chatMessages.filter(m => m.senderCedula === u.cedula).length;

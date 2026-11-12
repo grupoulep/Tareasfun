@@ -675,8 +675,8 @@ export const UserViews: React.FC<UserViewsProps> = ({
     const validEvents = calendarEvents
       .filter(
         ev =>
-          ev.id !== 'config_event_permissions' &&
-          ev.date !== 'CONFIG_PERMS' &&
+          !ev.id.startsWith('config_') &&
+          !ev.date.startsWith('CONFIG_') &&
           !ev.id.startsWith('ev_sync_')
       )
       .map(hydrateCalendarEvent);
@@ -977,9 +977,9 @@ export const UserViews: React.FC<UserViewsProps> = ({
           )}
         </div>
 
-        {/* Detalle del Evento en Toda la Pantalla */}
+        {/* Detalle del Evento en Toda la Pantalla (por encima del bloque izquierdo) */}
         {viewingEvent && (
-          <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+          <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
             <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
               <div className="flex items-center gap-3 min-w-0">
                 <span className="w-10 h-10 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center text-xl shrink-0">
@@ -1075,9 +1075,9 @@ export const UserViews: React.FC<UserViewsProps> = ({
           </div>
         )}
 
-        {/* Modal para Agregar Evento en Toda la Pantalla */}
+        {/* Modal para Agregar Evento en Toda la Pantalla (por encima del bloque izquierdo) */}
         {isAddEventModalOpen && canUserAddEvents && (
-          <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+          <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
             <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white flex items-center justify-between border-b border-[#1A3A73] shrink-0">
               <div className="flex items-center gap-3">
                 <span className="w-9 h-9 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center">
@@ -1858,9 +1858,9 @@ export const UserViews: React.FC<UserViewsProps> = ({
         })}
       </div>
 
-      {/* DETALLE DE LA ACTIVIDAD EN TODA LA PANTALLA */}
+      {/* DETALLE DE LA ACTIVIDAD EN TODA LA PANTALLA (POR ENCIMA DEL BLOQUE DE LA IZQUIERDA) */}
       {viewingTask && (
-        <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
           {/* Cabecera en Toda la Pantalla */}
           <div className="px-4 sm:px-8 py-4 bg-[#0B2559] text-white border-b border-[#1A3A73] flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-3 min-w-0">

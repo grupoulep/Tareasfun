@@ -302,7 +302,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           .join(', ');
 
   return (
-    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-[100] w-screen h-screen bg-[#F4F9FF] flex flex-col overflow-hidden">
       <div className="bg-white w-full h-full flex flex-col overflow-hidden">
         {/* Cabecera en Toda la Pantalla */}
         <div className="flex items-center justify-between px-4 sm:px-8 py-4 border-b border-[#B3D9FF]/30 bg-[#0B2559] text-white shrink-0">

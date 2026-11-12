@@ -2,7 +2,16 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { initializeApp as initClientFirebaseApp, getApps as getClientFirebaseApps } from 'firebase/app';
+import {
+  getFirestore as getClientFirestore,
+  doc as firestoreDoc,
+  onSnapshot as firestoreOnSnapshot,
+  setDoc as firestoreSetDoc,
+  getDoc as firestoreGetDoc,
+} from 'firebase/firestore';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 import {
   getOrCreateUser,
@@ -311,9 +320,137 @@ function maskEmailStartOnly(email: string): string {
   return `${localPart.slice(0, visibleLen)}....`;
 }
 
+async function sendRecoveryEmailViaResend(params: {
+  cedula: string;
+  userName: string;
+  targetEmail: string;
+  code: string;
+}): Promise<{
+  emailStatus: 'sent' | 'missing_api_key' | 'error';
+  deliveredTo: string;
+  resendErrorDetail: string;
+}> {
+  const { cedula, userName, targetEmail, code } = params;
+  const nowIso = new Date().toISOString();
+
+  activeRecoveryCodes.set(cedula, {
+    code,
+    cedula,
+    userName,
+    email: targetEmail,
+    createdAt: nowIso,
+    expiresAt: Date.now() + 15 * 60 * 1000,
+  });
+
+  const resendApiKey = (
+    process.env.RESEND_API_KEY ||
+    process.env.VITE_RESEND_API_KEY ||
+    ''
+  ).trim();
+  const fromEmail = (
+    process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>'
+  ).trim();
+
+  let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
+  let deliveredTo = targetEmail.toLowerCase();
+  let resendErrorDetail = '';
+
+  const emailHtml = `
+    <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+      <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+        <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
+      </div>
+      <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
+        <p style="font-size: 14px; margin-top: 0;">Solicitud de recuperación para <strong>${userName}</strong> (C.C. ${cedula})</p>
+        <p style="font-size: 12px; color: #3B82F6; margin: 4px 0;">Correo asociado: <strong>${targetEmail.toLowerCase()}</strong></p>
+        <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
+          ${code}
+        </div>
+        <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos en tareas.fundacionulep.fun.</p>
+      </div>
+    </div>
+  `;
+
+  if (resendApiKey) {
+    const candidateRecipients = Array.from(
+      new Set(
+        [
+          targetEmail.toLowerCase().trim(),
+          recoveryEmailRecipient.toLowerCase().trim(),
+          RESEND_EXCLUSIVE_RECIPIENT,
+          'grupoulep@gmail.com',
+        ].filter(e => e && e.includes('@'))
+      )
+    );
+
+    for (const recipientCandidate of candidateRecipients) {
+      try {
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: fromEmail,
+            to: [recipientCandidate],
+            subject: `Código de Recuperación de Contraseña: ${code} — Fundación ULEP`,
+            text: `Código de recuperación de contraseña para ${userName} (C.C. ${cedula}): ${code}`,
+            html: emailHtml,
+          }),
+        });
+
+        if (response.ok) {
+          emailStatus = 'sent';
+          deliveredTo = recipientCandidate;
+          resendErrorDetail = '';
+          break;
+        } else {
+          const errData = (await response.json().catch(() => ({}))) as { message?: string };
+          resendErrorDetail = errData.message || `HTTP ${response.status}`;
+          emailStatus = 'error';
+        }
+      } catch (fetchErr) {
+        resendErrorDetail = fetchErr instanceof Error ? fetchErr.message : 'Error de red con Resend';
+        emailStatus = 'error';
+      }
+    }
+  }
+
+  const historyKey = `recovery_${cedula}_${Date.now()}`;
+  sentNotificationsMap.set(historyKey, {
+    recordKey: historyKey,
+    taskId: `recovery_${cedula}`,
+    taskTitle: `Recuperación de Contraseña (${userName})`,
+    assignedToName: `${userName} (C.C. ${cedula})`,
+    dueDate: nowIso,
+    milestoneHours: 24,
+    recipient: deliveredTo,
+    messageText: `Código de recuperación generado para ${userName} (C.C. ${cedula}) enviado a ${deliveredTo}: ${code}`,
+    sentAt: nowIso,
+    status: emailStatus === 'sent' ? 'sent' : 'missing_api_key',
+    errorDetail: resendErrorDetail || undefined,
+  });
+
+  return { emailStatus, deliveredTo, resendErrorDetail };
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Habilitar CORS para que tareas.fundacionulep.fun (GitHub Pages) pueda enviar correos de recuperación y alertas a través del servidor Resend
+  app.use((req, res, next) => {
+    const origin = req.headers.origin || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
 
   app.use(express.json());
 
@@ -428,100 +565,17 @@ async function startServer() {
         }
       }
 
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      const nowIso = new Date().toISOString();
+      const preferredCode = String(req.body?.preferredCode || '').trim();
+      const code =
+        /^\d{6}$/.test(preferredCode)
+          ? preferredCode
+          : String(Math.floor(100000 + Math.random() * 900000));
 
-      activeRecoveryCodes.set(cedula, {
-        code,
+      const { emailStatus, deliveredTo } = await sendRecoveryEmailViaResend({
         cedula,
         userName,
-        email: targetEmail,
-        createdAt: nowIso,
-        expiresAt: Date.now() + 15 * 60 * 1000,
-      });
-
-      const resendApiKey = (
-        process.env.RESEND_API_KEY ||
-        process.env.VITE_RESEND_API_KEY ||
-        ''
-      ).trim();
-      const fromEmail = (
-        process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>'
-      ).trim();
-
-      let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
-      let deliveredTo = targetEmail;
-      let resendErrorDetail = '';
-
-      const emailHtml = `
-        <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
-          <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
-            <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
-          </div>
-          <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
-            <p style="font-size: 14px; margin-top: 0;">Solicitud de recuperación para <strong>${userName}</strong> (C.C. ${cedula})</p>
-            <p style="font-size: 12px; color: #3B82F6; margin: 4px 0;">Correo asociado: <strong>${targetEmail}</strong></p>
-            <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
-              ${code}
-            </div>
-            <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
-          </div>
-        </div>
-      `;
-
-      if (resendApiKey) {
-        const candidateRecipients = Array.from(
-          new Set([targetEmail, recoveryEmailRecipient, RESEND_EXCLUSIVE_RECIPIENT, 'grupoulep@gmail.com'].filter(Boolean))
-        );
-
-        for (const recipientCandidate of candidateRecipients) {
-          try {
-            const response = await fetch('https://api.resend.com/emails', {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${resendApiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                from: fromEmail,
-                to: [recipientCandidate],
-                subject: `Código de Recuperación de Contraseña: ${code} — Fundación ULEP`,
-                text: `Código de recuperación de contraseña para ${userName} (C.C. ${cedula}): ${code}`,
-                html: emailHtml,
-              }),
-            });
-
-            if (response.ok) {
-              emailStatus = 'sent';
-              deliveredTo = recipientCandidate;
-              resendErrorDetail = '';
-              break;
-            } else {
-              const errData = (await response.json().catch(() => ({}))) as { message?: string };
-              resendErrorDetail = errData.message || `HTTP ${response.status}`;
-              emailStatus = 'error';
-            }
-          } catch (fetchErr) {
-            resendErrorDetail = fetchErr instanceof Error ? fetchErr.message : 'Error de red con Resend';
-            emailStatus = 'error';
-          }
-        }
-      }
-
-      // Registrar en el historial de despachos para consulta del Admin
-      const historyKey = `recovery_${cedula}_${Date.now()}`;
-      sentNotificationsMap.set(historyKey, {
-        recordKey: historyKey,
-        taskId: `recovery_${cedula}`,
-        taskTitle: `Recuperación de Contraseña (${userName})`,
-        assignedToName: `${userName} (C.C. ${cedula})`,
-        dueDate: nowIso,
-        milestoneHours: 24,
-        recipient: deliveredTo,
-        messageText: `Código de recuperación generado para ${userName} (C.C. ${cedula}) enviado a ${deliveredTo}: ${code}`,
-        sentAt: nowIso,
-        status: emailStatus === 'sent' ? 'sent' : 'missing_api_key',
-        errorDetail: resendErrorDetail || undefined,
+        targetEmail,
+        code,
       });
 
       return res.json({
@@ -876,6 +930,114 @@ async function startServer() {
       // Silencioso en background
     }
   }, 60 * 1000);
+
+  // ============================================================================
+  // PUENTE EN TIEMPO REAL FIRESTORE -> RESEND PARA DOMINIO GITHUB (tareas.fundacionulep.fun)
+  // Escucha solicitudes de código de recuperación desde https://tareas.fundacionulep.fun
+  // y despacha el correo real vía Resend (No-reply@fundacionulep.fun) al instante.
+  // ============================================================================
+  try {
+    const fbConfigPath = path.join(__dirname, 'firebase-applet-config.json');
+    if (fs.existsSync(fbConfigPath)) {
+      const fbConfig = JSON.parse(fs.readFileSync(fbConfigPath, 'utf8'));
+      const serverFbApp = getClientFirebaseApps().find(a => a.name === 'server-resend-bridge')
+        || initClientFirebaseApp(fbConfig, 'server-resend-bridge');
+      const serverFirestoreDb = getClientFirestore(serverFbApp, fbConfig.firestoreDatabaseId);
+      const processedQueueReqIds = new Set<string>();
+
+      const processQueueDoc = async (docData: Record<string, any> | undefined) => {
+        if (!docData || docData.time !== 'PENDIENTE') return;
+        let payload: {
+          reqId?: string;
+          cedula?: string;
+          userName?: string;
+          email?: string;
+          code?: string;
+        } = {};
+        try {
+          payload = JSON.parse(String(docData.description || '{}'));
+        } catch {
+          return;
+        }
+        const reqId = String(payload.reqId || docData.linkedTaskId || '').trim();
+        if (!reqId || processedQueueReqIds.has(reqId)) return;
+        processedQueueReqIds.add(reqId);
+
+        const cedula = String(payload.cedula || docData.createdByCedula || '').trim();
+        const userName = String(payload.userName || docData.createdByName || 'Usuario').trim();
+        const rawEmail = String(payload.email || '').trim();
+        const code = String(payload.code || '').trim();
+        if (!cedula || !code) return;
+
+        const isSingleAdmin = cedula === SINGLE_ADMIN_CEDULA;
+        const targetEmail =
+          rawEmail && rawEmail.includes('@') && !rawEmail.toLowerCase().endsWith('@fundacionulep.org')
+            ? rawEmail
+            : isSingleAdmin
+            ? 'grupoulep@gmail.com'
+            : recoveryEmailRecipient || RESEND_EXCLUSIVE_RECIPIENT;
+
+        const { emailStatus, deliveredTo } = await sendRecoveryEmailViaResend({
+          cedula,
+          userName,
+          targetEmail,
+          code,
+        });
+
+        try {
+          await firestoreSetDoc(
+            firestoreDoc(serverFirestoreDb, 'calendar_events', 'config_resend_queue'),
+            {
+              title: 'Cola Envio Correo Recuperacion ULEP',
+              date: 'CONFIG_RESEND_QUEUE',
+              time: emailStatus === 'sent' ? 'ENVIADO' : 'PROCESADO',
+              type: 'actividad',
+              description: JSON.stringify({
+                reqId,
+                status: emailStatus,
+                deliveredTo,
+                maskedEmail: maskEmailStartOnly(deliveredTo),
+                code,
+                ts: Date.now(),
+              }).slice(0, 500),
+              createdByCedula: cedula.slice(0, 20),
+              createdByName: userName.slice(0, 100),
+              linkedTaskId: reqId.slice(0, 128),
+            },
+            { merge: true }
+          );
+        } catch {
+          // ignore
+        }
+      };
+
+      const queueRef = firestoreDoc(serverFirestoreDb, 'calendar_events', 'config_resend_queue');
+      firestoreOnSnapshot(
+        queueRef,
+        snap => {
+          if (snap.exists()) {
+            void processQueueDoc(snap.data());
+          }
+        },
+        () => {
+          // Silencioso en caso de reconexión
+        }
+      );
+
+      setInterval(async () => {
+        try {
+          const snap = await firestoreGetDoc(queueRef);
+          if (snap.exists()) {
+            await processQueueDoc(snap.data());
+          }
+        } catch {
+          // ignore
+        }
+      }, 2500);
+    }
+  } catch (err) {
+    console.warn('Firestore Resend bridge init warning:', err);
+  }
 
   // Rutas de API protegidas con Firebase Auth para Cloud SQL (PostgreSQL)
   app.post('/api/auth/sync', requireAuth, async (req: AuthRequest, res) => {

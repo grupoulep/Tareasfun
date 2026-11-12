@@ -470,7 +470,7 @@ export async function writeUserEditTaskPermission(cedula: string, allowed: boole
   }
 }
 
-export const RECOVERY_SECURITY_STORAGE_KEY = 'ulep_recovery_security_state_v2';
+export const RECOVERY_SECURITY_STORAGE_KEY = 'ulep_recovery_security_state_v3';
 
 export interface RecoverySecurityEntry {
   cedula: string;
@@ -483,8 +483,9 @@ export interface RecoverySecurityEntry {
 export function readRecoverySecurityStates(): Record<string, RecoverySecurityEntry> {
   if (typeof window === 'undefined') return {};
   try {
-    // Limpiar bloqueos antiguos de pruebas previas en v1
+    // Limpiar bloqueos antiguos de pruebas previas en v1 y v2
     window.localStorage.removeItem('ulep_recovery_security_state_v1');
+    window.localStorage.removeItem('ulep_recovery_security_state_v2');
     const raw = window.localStorage.getItem(RECOVERY_SECURITY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
@@ -544,6 +545,424 @@ export async function writeRecoverySecurityState(
   } catch {
     // ignore if offline
   }
+}
+
+// URLs de respaldo del backend Cloud Run para cuando la app está publicada en GitHub (tareas.fundacionulep.fun)
+const CLOUD_RUN_BACKEND_ORIGINS = [
+  'https://ais-pre-pl3bhbnnbnpeoovko5nwou-582520961682.us-east1.run.app',
+  'https://ais-dev-pl3bhbnnbnpeoovko5nwou-582520961682.us-east1.run.app',
+];
+
+export function isStaticGithubDeployment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return (
+    host === 'tareas.fundacionulep.fun' ||
+    host.endsWith('.fundacionulep.fun') ||
+    host.endsWith('.github.io')
+  );
+}
+
+/**
+ * Llama a los endpoints /api/resend/* funcionando tanto en el servidor propio como
+ * después de publicar en GitHub con el dominio tareas.fundacionulep.fun.
+ */
+export async function callResendApi(
+  endpoint: string,
+  options?: RequestInit
+): Promise<{ ok: boolean; status: number; data: Record<string, any> }> {
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const candidateUrls: string[] = isStaticGithubDeployment()
+    ? [
+        ...CLOUD_RUN_BACKEND_ORIGINS.map(origin => `${origin}${cleanEndpoint}`),
+      ]
+    : [
+        cleanEndpoint,
+        ...CLOUD_RUN_BACKEND_ORIGINS.map(origin => `${origin}${cleanEndpoint}`),
+      ];
+
+  let lastErrorData: Record<string, any> = {};
+  let lastStatus = 500;
+
+  for (const url of candidateUrls) {
+    try {
+      const response = await fetch(url, {
+        ...options,
+        mode: url.startsWith('http') ? 'cors' : undefined,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        continue;
+      }
+      const data = (await response.json().catch(() => ({}))) as Record<string, any>;
+      if (response.ok) {
+        return { ok: true, status: response.status, data };
+      }
+      // Solo retornar error de negocio si el payload JSON proviene explícitamente de nuestra ruta Express
+      if (
+        data &&
+        (data.locked === true ||
+          data.valid === false ||
+          typeof data.error === 'string')
+      ) {
+        return { ok: false, status: response.status, data };
+      }
+      lastErrorData = data;
+      lastStatus = response.status;
+    } catch {
+      // Continuar con el siguiente endpoint candidato
+    }
+  }
+
+  return { ok: false, status: lastStatus, data: lastErrorData };
+}
+
+const RECOVERY_CODES_STORAGE_KEY = 'ulep_active_recovery_codes_v1';
+
+interface StoredRecoveryCodeItem {
+  code: string;
+  cedula: string;
+  email: string;
+  expiresAt: number;
+}
+
+function readLocalRecoveryCodes(): Record<string, StoredRecoveryCodeItem> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(RECOVERY_CODES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveRecoveryCodeEverywhere(item: StoredRecoveryCodeItem) {
+  const map = readLocalRecoveryCodes();
+  map[item.cedula] = item;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(RECOVERY_CODES_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', 'config_recovery_codes'),
+      {
+        title: 'Codigos Activos Recuperacion',
+        date: 'CONFIG_RECOVERY_CODES',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(map).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: 'CONFIG_RECOVERY_CODES',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+}
+
+async function readRecoveryCodeEverywhere(cedula: string): Promise<StoredRecoveryCodeItem | null> {
+  const localMap = readLocalRecoveryCodes();
+  if (localMap[cedula]) return localMap[cedula];
+  try {
+    const snap = await getDoc(doc(db, 'calendar_events', 'config_recovery_codes'));
+    if (snap.exists()) {
+      const desc = snap.data()?.description;
+      if (desc && typeof desc === 'string') {
+        const parsed = JSON.parse(desc) as Record<string, StoredRecoveryCodeItem>;
+        if (parsed && parsed[cedula]) {
+          return parsed[cedula];
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Envía la solicitud de correo al puente en tiempo real en Firestore (calendar_events/config_resend_queue)
+ * para que el servidor Resend envíe el correo desde No-reply@fundacionulep.fun incluso cuando el usuario
+ * entra desde https://tareas.fundacionulep.fun (GitHub Pages).
+ */
+async function dispatchEmailThroughFirestoreBridge(params: {
+  cedula: string;
+  userName: string;
+  userEmail: string;
+  code: string;
+}): Promise<{ delivered: boolean; deliveredTo: string }> {
+  const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const queueDocRef = doc(db, 'calendar_events', 'config_resend_queue');
+  try {
+    await setDoc(
+      queueDocRef,
+      {
+        title: 'Cola Envio Correo Recuperacion ULEP',
+        date: 'CONFIG_RESEND_QUEUE',
+        time: 'PENDIENTE',
+        type: 'actividad',
+        description: JSON.stringify({
+          reqId,
+          cedula: params.cedula,
+          userName: params.userName,
+          email: params.userEmail.toLowerCase().trim(),
+          code: params.code,
+          ts: Date.now(),
+        }).slice(0, 500),
+        createdByCedula: String(params.cedula || SINGLE_ADMIN_CEDULA).slice(0, 20),
+        createdByName: String(params.userName || 'Usuario').slice(0, 100),
+        linkedTaskId: reqId,
+      },
+      { merge: true }
+    );
+
+    // Esperar hasta ~2.7 segundos a que el puente en tiempo real del servidor marque time === 'ENVIADO'
+    for (let i = 0; i < 6; i++) {
+      await new Promise(resolve => setTimeout(resolve, 450));
+      const snap = await getDoc(queueDocRef);
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d?.linkedTaskId === reqId && (d?.time === 'ENVIADO' || d?.time === 'PROCESADO')) {
+          let parsedDesc: { status?: string; deliveredTo?: string } = {};
+          try {
+            parsedDesc = JSON.parse(String(d.description || '{}'));
+          } catch {
+            // ignore
+          }
+          return {
+            delivered: d.time === 'ENVIADO' || parsedDesc.status === 'sent',
+            deliveredTo: parsedDesc.deliveredTo || params.userEmail,
+          };
+        }
+      }
+    }
+  } catch {
+    // Continuar con código directo si hay restricción de red
+  }
+  return { delivered: false, deliveredTo: params.userEmail };
+}
+
+export async function requestRecoveryCodeCrossOrigin(params: {
+  cedula: string;
+  userName: string;
+  userEmail: string;
+  isCurrentlyLocked: boolean;
+}): Promise<{ ok: boolean; status: number; data: Record<string, any> }> {
+  const cleanCed = String(params.cedula || '').trim();
+  const isSingleAdmin = cleanCed === SINGLE_ADMIN_CEDULA;
+  const localSecMap = readRecoverySecurityStates();
+  const currentSec: RecoverySecurityEntry = localSecMap[cleanCed] || {
+    cedula: cleanCed,
+    sendAttempts: 0,
+    verifyAttempts: 0,
+    locked: false,
+  };
+
+  if (!isSingleAdmin && (currentSec.locked || params.isCurrentlyLocked)) {
+    const lockedState: RecoverySecurityEntry = {
+      ...currentSec,
+      locked: true,
+      lockedAt: currentSec.lockedAt || new Date().toISOString(),
+    };
+    await writeRecoverySecurityState(cleanCed, lockedState);
+    return {
+      ok: false,
+      status: 403,
+      data: {
+        locked: true,
+        error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+        securityState: lockedState,
+      },
+    };
+  }
+
+  const generatedCode = String(Math.floor(100000 + Math.random() * 900000));
+  await saveRecoveryCodeEverywhere({
+    code: generatedCode,
+    cedula: cleanCed,
+    email: params.userEmail.toLowerCase().trim(),
+    expiresAt: Date.now() + 15 * 60 * 1000,
+  });
+
+  // 1. Si no estamos en GitHub Pages estático, intentar primero la ruta local /api/resend/send-recovery-code
+  if (!isStaticGithubDeployment()) {
+    const apiResult = await callResendApi('/api/resend/send-recovery-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...params,
+        preferredCode: generatedCode,
+      }),
+    });
+
+    if (apiResult.ok && apiResult.data?.code) {
+      await saveRecoveryCodeEverywhere({
+        code: String(apiResult.data.code),
+        cedula: cleanCed,
+        email: params.userEmail.toLowerCase().trim(),
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+      return apiResult;
+    }
+
+    if (!isSingleAdmin && apiResult.data?.locked === true) {
+      return apiResult;
+    }
+  }
+
+  // 2. Control de intentos en Firestore/local (2 intentos permitidos; al 3er intento bloquea excepto Admin Único)
+  if (!isSingleAdmin) {
+    currentSec.sendAttempts += 1;
+    if (currentSec.sendAttempts >= 3) {
+      currentSec.locked = true;
+      currentSec.lockedAt = new Date().toISOString();
+      await writeRecoverySecurityState(cleanCed, currentSec);
+      return {
+        ok: false,
+        status: 403,
+        data: {
+          locked: true,
+          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+          securityState: currentSec,
+        },
+      };
+    }
+    await writeRecoverySecurityState(cleanCed, currentSec);
+  }
+
+  // 3. Despachar el correo real a través del Puente Firestore -> Resend (funciona desde https://tareas.fundacionulep.fun)
+  const bridgeResult = await dispatchEmailThroughFirestoreBridge({
+    cedula: cleanCed,
+    userName: params.userName,
+    userEmail: params.userEmail,
+    code: generatedCode,
+  });
+
+  const cleanTargetEmail = (bridgeResult.deliveredTo || params.userEmail || 'fundacionulep@gmail.com')
+    .toLowerCase()
+    .trim();
+  const localPart = cleanTargetEmail.split('@')[0] || 'funda';
+  const visibleLen = Math.min(5, Math.max(3, Math.floor(localPart.length / 2)));
+  const maskedEmail = `${localPart.slice(0, visibleLen)}....`;
+
+  return {
+    ok: true,
+    status: 200,
+    data: {
+      ok: true,
+      status: bridgeResult.delivered ? 'sent' : 'missing_api_key',
+      code: generatedCode,
+      deliveredTo: cleanTargetEmail,
+      maskedEmail,
+      securityState: currentSec,
+    },
+  };
+}
+
+export async function verifyRecoveryCodeCrossOrigin(params: {
+  cedula: string;
+  code: string;
+  expectedCode?: string | null;
+}): Promise<{ ok: boolean; status: number; data: Record<string, any> }> {
+  const cleanCed = String(params.cedula || '').trim();
+  const cleanCode = String(params.code || '').trim();
+  const cleanExpected = params.expectedCode ? String(params.expectedCode).trim() : '';
+  const isSingleAdmin = cleanCed === SINGLE_ADMIN_CEDULA;
+
+  // 1. Verificar contra el código activo en memoria o sincronizado en Firestore / localStorage
+  const storedCode = await readRecoveryCodeEverywhere(cleanCed);
+  const matchesExpected = Boolean(cleanExpected && cleanExpected === cleanCode);
+  const matchesStored = Boolean(
+    storedCode && Date.now() <= storedCode.expiresAt && storedCode.code === cleanCode
+  );
+
+  if (matchesExpected || matchesStored) {
+    const unlockedState: RecoverySecurityEntry = {
+      cedula: cleanCed,
+      sendAttempts: 0,
+      verifyAttempts: 0,
+      locked: false,
+    };
+    await writeRecoverySecurityState(cleanCed, unlockedState);
+    if (!isStaticGithubDeployment()) {
+      void callResendApi('/api/resend/unlock-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cedula: cleanCed }),
+      });
+    }
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        ok: true,
+        valid: true,
+        securityState: unlockedState,
+      },
+    };
+  }
+
+  // 2. Si no estamos en GitHub Pages estático, consultar también el backend local
+  if (!isStaticGithubDeployment()) {
+    const apiResult = await callResendApi('/api/resend/verify-recovery-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cedula: cleanCed, code: cleanCode }),
+    });
+
+    if (apiResult.ok || apiResult.data?.locked === true || apiResult.data?.valid === false) {
+      return apiResult;
+    }
+  }
+
+  // 3. Conteo autónomo de intentos en tareas.fundacionulep.fun
+  const localSecMap = readRecoverySecurityStates();
+  const currentSec: RecoverySecurityEntry = localSecMap[cleanCed] || {
+    cedula: cleanCed,
+    sendAttempts: 0,
+    verifyAttempts: 0,
+    locked: false,
+  };
+
+  if (!isSingleAdmin) {
+    currentSec.verifyAttempts += 1;
+    if (currentSec.verifyAttempts >= 3) {
+      currentSec.locked = true;
+      currentSec.lockedAt = new Date().toISOString();
+      await writeRecoverySecurityState(cleanCed, currentSec);
+      return {
+        ok: false,
+        status: 403,
+        data: {
+          valid: false,
+          locked: true,
+          error: 'Cuenta y envío de correos bloqueados tras 3 intentos fallidos. Solo el Administrador puede desbloquearla.',
+          securityState: currentSec,
+        },
+      };
+    }
+    await writeRecoverySecurityState(cleanCed, currentSec);
+  }
+
+  return {
+    ok: false,
+    status: 400,
+    data: {
+      valid: false,
+      error: isSingleAdmin
+        ? 'El código ingresado es incorrecto.'
+        : `Código incorrecto. Intento ${currentSec.verifyAttempts} de 2 permitidos antes del bloqueo.`,
+      securityState: currentSec,
+    },
+  };
 }
 
 export function hydrateCalendarEvent(raw: CalendarEvent): CalendarEvent {

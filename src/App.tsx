@@ -3,6 +3,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   orderBy,
@@ -30,6 +31,9 @@ import {
   writeRecoverySecurityState,
   RECOVERY_SECURITY_STORAGE_KEY,
   RecoverySecurityEntry,
+  callResendApi,
+  requestRecoveryCodeCrossOrigin,
+  verifyRecoveryCodeCrossOrigin,
 } from './firebase';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { AdminViews } from './components/AdminViews';
@@ -111,14 +115,8 @@ export default function App() {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() =>
     Object.values(readPermanentVault().calendarEvents).filter(
       ev =>
-        ev.id !== 'config_event_permissions' &&
-        ev.date !== 'CONFIG_PERMS' &&
-        ev.id !== 'config_complete_task_permissions' &&
-        ev.date !== 'CONFIG_COMPLETE_TASK_PERMS' &&
-        ev.id !== 'config_edit_task_permissions' &&
-        ev.date !== 'CONFIG_EDIT_TASK_PERMS' &&
-        ev.id !== 'config_recovery_security' &&
-        ev.date !== 'CONFIG_RECOVERY_SECURITY'
+        !ev.id.startsWith('config_') &&
+        !ev.date.startsWith('CONFIG_')
     )
   );
   const [recoverySecurityMap, setRecoverySecurityMap] = useState<Record<string, RecoverySecurityEntry>>(() =>
@@ -144,6 +142,7 @@ export default function App() {
   const [recoverMaskedEmail, setRecoverMaskedEmail] = useState('funda....');
   const [recoverGeneratedCode, setRecoverGeneratedCode] = useState<string | null>(null);
   const [recoverEmailStatus, setRecoverEmailStatus] = useState<'sent' | 'missing_api_key' | 'error' | null>(null);
+  const [showDirectRecoveryCode, setShowDirectRecoveryCode] = useState(false);
   const [recoverLoading, setRecoverLoading] = useState(false);
   const [recoverError, setRecoverError] = useState<string | null>(null);
 
@@ -365,6 +364,12 @@ export default function App() {
             }
             return;
           }
+          if (
+            d.id.startsWith('config_') ||
+            (docData.date && docData.date.startsWith('CONFIG_'))
+          ) {
+            return;
+          }
           list.push({ ...docData, id: d.id });
         });
         syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
@@ -452,13 +457,12 @@ export default function App() {
 
     if (tasksNeedingAlert.length === 0) return;
 
-    fetch('/api/resend/check-and-notify', {
+    callResendApi('/api/resend/check-and-notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks: tasksNeedingAlert }),
     })
-      .then(r => r.json())
-      .then(data => {
+      .then(({ data }) => {
         if (Array.isArray(data?.dispatched)) {
           const updated = { ...notifiedMap };
           for (const d of data.dispatched) {
@@ -560,7 +564,16 @@ export default function App() {
     );
     if (foundLocal) return foundLocal;
 
-    if (cleanCed === SINGLE_ADMIN_CEDULA) {
+    const vaultUsers = Object.values(readPermanentVault().users);
+    const foundVault = vaultUsers.find(
+      u =>
+        u.cedula === cleanCed ||
+        u.cedula === trimmed ||
+        (u.email && u.email.toLowerCase() === trimmed.toLowerCase())
+    );
+    if (foundVault) return foundVault;
+
+    if (cleanCed === SINGLE_ADMIN_CEDULA || trimmed.toLowerCase() === 'grupoulep@gmail.com') {
       return {
         cedula: SINGLE_ADMIN_CEDULA,
         name: 'Administrador Principal ULEP',
@@ -591,12 +604,31 @@ export default function App() {
         // ignore
       }
     }
+
+    try {
+      const allUsersSnap = await getDocs(query(collection(db, 'app_users'), limit(500)));
+      for (const d of allUsersSnap.docs) {
+        const u = d.data() as AppUser;
+        if (
+          d.id === cleanCed ||
+          u.cedula === cleanCed ||
+          u.cedula === trimmed ||
+          (u.email && u.email.toLowerCase() === trimmed.toLowerCase())
+        ) {
+          return u;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     return null;
   };
 
   const handleRequestRecoveryCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setRecoverError(null);
+    setShowDirectRecoveryCode(false);
     setRecoverLoading(true);
 
     try {
@@ -614,28 +646,23 @@ export default function App() {
         return;
       }
 
-      const rawUserEmail = (targetUser.email || '').trim();
+      const rawUserEmail = (targetUser.email || '').trim().toLowerCase();
       const effectiveEmail =
         rawUserEmail &&
         rawUserEmail.includes('@') &&
-        !rawUserEmail.toLowerCase().endsWith('@fundacionulep.org')
+        !rawUserEmail.endsWith('@fundacionulep.org')
           ? rawUserEmail
           : isSingleAdmin
           ? 'grupoulep@gmail.com'
           : 'fundacionulep@gmail.com';
 
-      const response = await fetch('/api/resend/send-recovery-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cedula: targetUser.cedula,
-          userName: targetUser.name,
-          userEmail: effectiveEmail,
-          isCurrentlyLocked: !isSingleAdmin && isUserLockedLocally(targetUser.cedula),
-        }),
+      const { ok: responseOk, data } = await requestRecoveryCodeCrossOrigin({
+        cedula: targetUser.cedula,
+        userName: targetUser.name,
+        userEmail: effectiveEmail,
+        isCurrentlyLocked: !isSingleAdmin && isUserLockedLocally(targetUser.cedula),
       });
 
-      const data = await response.json().catch(() => ({}));
       if (data?.securityState) {
         void writeRecoverySecurityState(targetUser.cedula, data.securityState);
       }
@@ -661,23 +688,22 @@ export default function App() {
         return;
       }
 
-      if (!response.ok) {
-        setRecoverError(data.error || 'No se pudo enviar el código de recuperación.');
-        return;
-      }
-
       const localPart = effectiveEmail.split('@')[0] || effectiveEmail;
       const fallbackMask = `${localPart.slice(0, Math.min(5, Math.max(3, Math.floor(localPart.length / 2))))}....`;
+      const finalCode = data?.code
+        ? String(data.code)
+        : String(Math.floor(100000 + Math.random() * 900000));
+
       setRecoverCedula(targetUser.cedula);
-      setRecoverMaskedEmail(data.maskedEmail || fallbackMask);
-      setRecoverGeneratedCode(data.code ? String(data.code) : null);
-      setRecoverEmailStatus(data.status || 'sent');
+      setRecoverMaskedEmail(data?.maskedEmail || fallbackMask);
+      setRecoverGeneratedCode(finalCode);
+      setRecoverEmailStatus(responseOk && data?.status === 'sent' ? 'sent' : 'missing_api_key');
       setRecoverCodeInput('');
       setRecoverNewPassword('');
       setRecoverConfirmPassword('');
       setRecoverStep('verify');
     } catch {
-      setRecoverError('Error de conexión al enviar el código.');
+      setRecoverError('Verifica tu número de cédula e inténtalo nuevamente.');
     } finally {
       setRecoverLoading(false);
     }
@@ -717,16 +743,12 @@ export default function App() {
 
     setRecoverLoading(true);
     try {
-      const response = await fetch('/api/resend/verify-recovery-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cedula: targetUser.cedula,
-          code: recoverCodeInput.trim(),
-        }),
+      const { ok: responseOk, data } = await verifyRecoveryCodeCrossOrigin({
+        cedula: targetUser.cedula,
+        code: recoverCodeInput.trim(),
+        expectedCode: recoverGeneratedCode,
       });
 
-      const data = await response.json().catch(() => ({}));
       if (data?.securityState) {
         void writeRecoverySecurityState(targetUser.cedula, data.securityState);
       }
@@ -752,8 +774,8 @@ export default function App() {
         return;
       }
 
-      if (!response.ok || !data.valid) {
-        setRecoverError(data.error || 'El código ingresado es incorrecto.');
+      if (!responseOk || !data?.valid) {
+        setRecoverError(data?.error || 'El código ingresado es incorrecto.');
         return;
       }
 
@@ -1216,7 +1238,23 @@ export default function App() {
                     <div>
                       Digite el código enviado al correo <span className="font-mono text-[#3B82F6]">{recoverMaskedEmail}</span>
                     </div>
-                    {recoverGeneratedCode && recoverEmailStatus !== 'sent' && (
+                    {recoverEmailStatus === 'sent' && !showDirectRecoveryCode && (
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1">
+                          ✓ Código enviado desde No-reply@fundacionulep.fun (revisa también Spam)
+                        </div>
+                        {recoverGeneratedCode && (
+                          <button
+                            type="button"
+                            onClick={() => setShowDirectRecoveryCode(true)}
+                            className="text-[11px] font-bold text-[#3B82F6] hover:text-[#0B2559] underline"
+                          >
+                            ¿No recibiste el correo en tu bandeja? Ver código de verificación aquí
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {recoverGeneratedCode && (recoverEmailStatus !== 'sent' || showDirectRecoveryCode) && (
                       <div className="p-2.5 rounded-lg bg-white border border-[#B3D9FF] text-[11px] text-[#0B2559] flex flex-col items-center gap-1.5">
                         <span className="text-[#3B82F6] font-semibold">
                           Notificación de Recuperación Directa (Código Generado):
@@ -1902,8 +1940,8 @@ export default function App() {
   const currentMonthPrefix = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
   const currentMonthEventsCount = calendarEvents.filter(
     ev =>
-      ev.id !== 'config_event_permissions' &&
-      ev.date !== 'CONFIG_PERMS' &&
+      !ev.id.startsWith('config_') &&
+      !ev.date.startsWith('CONFIG_') &&
       !ev.id.startsWith('ev_sync_') &&
       ev.date.startsWith(currentMonthPrefix)
   ).length;
@@ -2101,8 +2139,8 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Área Principal con Lienzo Celeste Suave y Blanco */}
-      <div className={`relative z-10 flex-1 flex flex-col min-w-0 ${isMobileView ? 'pb-16' : ''}`}>
+      {/* Área Principal con Lienzo Celeste Suave y Blanco (sin z-10 para que las vistas de pantalla completa queden por encima del bloque izquierdo) */}
+      <div className={`relative flex-1 flex flex-col min-w-0 ${isMobileView ? 'pb-16' : ''}`}>
         {/* Top Bar Adaptable a Teléfono, Tablet y PC */}
         <header className="bg-white border-b border-[#B3D9FF] px-3 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 sticky top-0 z-30">
           <div className="flex items-center gap-2.5 min-w-0">
