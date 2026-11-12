@@ -90,7 +90,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   activeSection,
   currentUser,
   users,
-  tasks,
+  tasks: rawTasks,
   auditLogs,
   chatMessages,
   calendarEvents,
@@ -99,6 +99,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   deviceMode = 'pc',
 }) => {
   const isMobile = deviceMode === 'mobile';
+  const [locallyDeletedTaskIds, setLocallyDeletedTaskIds] = useState<Record<string, boolean>>({});
+  const tasks = rawTasks.filter(t => !locallyDeletedTaskIds[t.id]);
 
   // Pantallas internas de la sección admin_users
   const [adminUsersScreen, setAdminUsersScreen] = useState<AdminUsersScreen>('directory');
@@ -1003,6 +1005,13 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   };
 
   const handleDeleteTaskRecord = async (task: TaskItem) => {
+    if (!task || !task.id) return;
+    setLocallyDeletedTaskIds(prev => ({ ...prev, [task.id]: true }));
+    setExpandedTaskIds(prev => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
     await deleteTaskFromFirestore(task.id);
     await recordAuditLog({
       actorCedula: currentUser.cedula,
@@ -2745,18 +2754,32 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                       </span>
                     </div>
 
-                    <button
-                      type="button"
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
-                        isExpanded ? 'bg-[#0B2559] text-white' : 'bg-[#EAF3FF] text-[#0B2559] hover:bg-[#B3D9FF]'
-                      }`}
-                    >
-                      <i
-                        className={`fi ${
-                          isExpanded ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'
-                        } text-base`}
-                      />
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation();
+                          void handleDeleteTaskRecord(task);
+                        }}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white border border-rose-200"
+                        title="Eliminar tarea en tiempo real"
+                      >
+                        <i className="fi fi-rr-trash text-xs" />
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                          isExpanded ? 'bg-[#0B2559] text-white' : 'bg-[#EAF3FF] text-[#0B2559] hover:bg-[#B3D9FF]'
+                        }`}
+                      >
+                        <i
+                          className={`fi ${
+                            isExpanded ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'
+                          } text-base`}
+                        />
+                      </button>
+                    </div>
                   </div>
 
                   {isExpanded && (

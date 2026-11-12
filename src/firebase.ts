@@ -91,11 +91,30 @@ export function readPermanentVault(): PermanentDataVault {
   }
 }
 
-export function writePermanentVault(vault: PermanentDataVault) {
+const realtimeBroadcastChannel =
+  typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('ulep_realtime_sync_channel_v1')
+    : null;
+
+if (realtimeBroadcastChannel && typeof window !== 'undefined') {
+  realtimeBroadcastChannel.onmessage = () => {
+    window.dispatchEvent(new CustomEvent('ulep_vault_updated'));
+  };
+}
+
+export function writePermanentVault(vault: PermanentDataVault, notifyListeners = true) {
   if (typeof window === 'undefined') return;
   try {
     vault.updatedAt = new Date().toISOString();
     window.localStorage.setItem(PERMANENT_VAULT_STORAGE_KEY, JSON.stringify(vault));
+    if (notifyListeners) {
+      window.dispatchEvent(new CustomEvent('ulep_vault_updated'));
+      try {
+        realtimeBroadcastChannel?.postMessage({ updatedAt: vault.updatedAt });
+      } catch {
+        // ignore broadcast errors
+      }
+    }
   } catch (err) {
     console.warn('No se pudo actualizar el espejo local de persistencia:', err);
   }
@@ -107,16 +126,101 @@ export function syncCollectionToPermanentVault<T>(
   getKey: (item: T) => string
 ) {
   const vault = readPermanentVault();
-  const targetMap: Record<string, T> =
-    collectionType === 'auditLogs' ? {} : { ...(vault[collectionType] as Record<string, T>) };
+  const deletedTasks = new Set(vault.deletedTaskIds);
+  const deletedUsers = new Set(vault.deletedUserCedulas);
+  const deletedEvents = new Set(vault.deletedEventIds);
+
+  const targetMap: Record<string, T> = {};
   for (const item of items) {
     const key = getKey(item);
-    if (key) {
-      targetMap[key] = item;
-    }
+    if (!key) continue;
+    if (collectionType === 'tasks' && deletedTasks.has(key)) continue;
+    if (collectionType === 'users' && deletedUsers.has(key)) continue;
+    if (collectionType === 'calendarEvents' && deletedEvents.has(key)) continue;
+    targetMap[key] = item;
   }
   (vault[collectionType] as Record<string, T>) = targetMap;
-  writePermanentVault(vault);
+  writePermanentVault(vault, false);
+}
+
+export async function syncDeletedIdsToFirestore() {
+  try {
+    const vault = readPermanentVault();
+    const compactPayload = {
+      t: vault.deletedTaskIds.slice(-25),
+      u: vault.deletedUserCedulas.slice(-20),
+      e: vault.deletedEventIds.slice(-25),
+    };
+    await setDoc(
+      doc(db, 'calendar_events', 'config_deleted_ids'),
+      {
+        title: 'Sincronizacion Eliminados Tiempo Real',
+        date: 'CONFIG_DELETED_IDS',
+        time: new Date().toISOString().slice(11, 16),
+        type: 'actividad',
+        description: JSON.stringify(compactPayload).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Sistema Tiempo Real',
+        linkedTaskId: 'CONFIG_DELETED_IDS',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore transient error
+  }
+}
+
+export function applyRemoteDeletedIdsToVault(rawDescription?: string): boolean {
+  if (!rawDescription) return false;
+  try {
+    const parsed = JSON.parse(rawDescription);
+    if (!parsed || typeof parsed !== 'object') return false;
+    const vault = readPermanentVault();
+    let changed = false;
+
+    const remoteTasks: string[] = Array.isArray(parsed.t) ? parsed.t : [];
+    for (const tId of remoteTasks) {
+      if (tId && !vault.deletedTaskIds.includes(tId)) {
+        vault.deletedTaskIds.push(tId);
+        changed = true;
+      }
+      if (tId && vault.tasks[tId]) {
+        delete vault.tasks[tId];
+        changed = true;
+      }
+    }
+
+    const remoteUsers: string[] = Array.isArray(parsed.u) ? parsed.u : [];
+    for (const ced of remoteUsers) {
+      if (ced && ced !== SINGLE_ADMIN_CEDULA && !vault.deletedUserCedulas.includes(ced)) {
+        vault.deletedUserCedulas.push(ced);
+        changed = true;
+      }
+      if (ced && ced !== SINGLE_ADMIN_CEDULA && vault.users[ced]) {
+        delete vault.users[ced];
+        changed = true;
+      }
+    }
+
+    const remoteEvents: string[] = Array.isArray(parsed.e) ? parsed.e : [];
+    for (const evId of remoteEvents) {
+      if (evId && !vault.deletedEventIds.includes(evId)) {
+        vault.deletedEventIds.push(evId);
+        changed = true;
+      }
+      if (evId && vault.calendarEvents[evId]) {
+        delete vault.calendarEvents[evId];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      writePermanentVault(vault, true);
+    }
+    return changed;
+  } catch {
+    return false;
+  }
 }
 
 async function syncWithCloudSqlApi(endpoint: string, method: 'POST' | 'DELETE', body?: unknown) {
@@ -1059,11 +1163,12 @@ export async function deleteUserFromFirestore(cedula: string) {
   if (!vault.deletedUserCedulas.includes(cleanCed)) {
     vault.deletedUserCedulas.push(cleanCed);
   }
-  writePermanentVault(vault);
+  writePermanentVault(vault, true);
 
   const path = `app_users/${cleanCed}`;
   try {
     await deleteDoc(doc(db, 'app_users', cleanCed));
+    void syncDeletedIdsToFirestore();
     void syncWithCloudSqlApi(`/api/users/${encodeURIComponent(cleanCed)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -1071,17 +1176,22 @@ export async function deleteUserFromFirestore(cedula: string) {
 }
 
 export async function saveTaskToFirestore(task: TaskItem) {
-  const taskId = cleanId(task.id);
+  const rawTaskId = String(task.id || '').trim();
+  const taskId = cleanId(rawTaskId);
   const path = `tasks/${taskId}`;
   const payload = sanitizeTaskPayload(task);
 
   const vault = readPermanentVault();
+  if (rawTaskId && rawTaskId !== taskId) {
+    delete vault.tasks[rawTaskId];
+  }
   vault.tasks[taskId] = { id: taskId, ...payload };
-  vault.deletedTaskIds = vault.deletedTaskIds.filter(id => id !== taskId);
-  writePermanentVault(vault);
+  vault.deletedTaskIds = vault.deletedTaskIds.filter(id => id !== taskId && id !== rawTaskId);
+  writePermanentVault(vault, true);
 
   try {
     await setDoc(doc(db, 'tasks', taskId), payload, { merge: true });
+    void syncDeletedIdsToFirestore();
     void syncWithCloudSqlApi('/api/tasks', 'POST', { id: taskId, ...payload });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -1089,17 +1199,56 @@ export async function saveTaskToFirestore(task: TaskItem) {
 }
 
 export async function deleteTaskFromFirestore(taskId: string) {
-  const vault = readPermanentVault();
-  delete vault.tasks[taskId];
-  if (!vault.deletedTaskIds.includes(taskId)) {
-    vault.deletedTaskIds.push(taskId);
-  }
-  writePermanentVault(vault);
+  const rawId = String(taskId || '').trim();
+  const normalizedId = cleanId(rawId);
+  const syncedCalId = cleanId(`ev_sync_${rawId}`);
+  const syncedCalIdNorm = cleanId(`ev_sync_${normalizedId}`);
 
-  const path = `tasks/${taskId}`;
+  const vault = readPermanentVault();
+  delete vault.tasks[rawId];
+  delete vault.tasks[normalizedId];
+  if (rawId && !vault.deletedTaskIds.includes(rawId)) {
+    vault.deletedTaskIds.push(rawId);
+  }
+  if (normalizedId && !vault.deletedTaskIds.includes(normalizedId)) {
+    vault.deletedTaskIds.push(normalizedId);
+  }
+
+  // Eliminar también cualquier evento de calendario vinculado a esta tarea
+  const calIdsToDelete = new Set<string>([syncedCalId, syncedCalIdNorm]);
+  for (const [evKey, evVal] of Object.entries(vault.calendarEvents)) {
+    if (evVal.linkedTaskId === rawId || evVal.linkedTaskId === normalizedId) {
+      calIdsToDelete.add(evKey);
+    }
+  }
+  for (const evId of calIdsToDelete) {
+    if (evId && vault.calendarEvents[evId]) {
+      delete vault.calendarEvents[evId];
+      if (!vault.deletedEventIds.includes(evId)) {
+        vault.deletedEventIds.push(evId);
+      }
+    }
+  }
+
+  writePermanentVault(vault, true);
+
+  const path = `tasks/${rawId || normalizedId}`;
   try {
-    await deleteDoc(doc(db, 'tasks', taskId));
-    void syncWithCloudSqlApi(`/api/tasks/${encodeURIComponent(taskId)}`, 'DELETE');
+    const deletePromises: Promise<unknown>[] = [];
+    if (rawId) {
+      deletePromises.push(deleteDoc(doc(db, 'tasks', rawId)).catch(() => {}));
+    }
+    if (normalizedId && normalizedId !== rawId) {
+      deletePromises.push(deleteDoc(doc(db, 'tasks', normalizedId)).catch(() => {}));
+    }
+    for (const evId of calIdsToDelete) {
+      if (evId) {
+        deletePromises.push(deleteDoc(doc(db, 'calendar_events', evId)).catch(() => {}));
+      }
+    }
+    await Promise.all(deletePromises);
+    void syncDeletedIdsToFirestore();
+    void syncWithCloudSqlApi(`/api/tasks/${encodeURIComponent(rawId || normalizedId)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -1186,11 +1335,12 @@ export async function deleteCalendarEventFromFirestore(eventId: string) {
   if (!vault.deletedEventIds.includes(eventId)) {
     vault.deletedEventIds.push(eventId);
   }
-  writePermanentVault(vault);
+  writePermanentVault(vault, true);
 
   const path = `calendar_events/${eventId}`;
   try {
     await deleteDoc(doc(db, 'calendar_events', eventId));
+    void syncDeletedIdsToFirestore();
     void syncWithCloudSqlApi(`/api/calendar-events/${encodeURIComponent(eventId)}`, 'DELETE');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -1200,7 +1350,7 @@ export async function deleteCalendarEventFromFirestore(eventId: string) {
 export async function clearAllAuditLogsFromFirestore(logsToDelete: AuditLog[]) {
   const vault = readPermanentVault();
   vault.auditLogs = {};
-  writePermanentVault(vault);
+  writePermanentVault(vault, true);
 
   const snap = await getDocs(query(collection(db, 'audit_logs'), limit(500)));
   const idsToDelete = new Set<string>(logsToDelete.map(l => l.id).filter(Boolean));
@@ -1221,9 +1371,7 @@ export async function clearAllAuditLogsFromFirestore(logsToDelete: AuditLog[]) {
 }
 
 /**
- * Inicializa y reconcilia la base de datos de producción sin borrar NINGÚN dato existente.
- * Garantiza que al actualizar o desplegar de Google AI Studio a GitHub todos los registros
- * permanezcan intactos en Firestore, Cloud SQL y la bóveda persistente.
+ * Inicializa y reconcilia la base de datos de producción respetando todas las eliminaciones en tiempo real.
  */
 export async function seedInitialDatabaseIfEmpty() {
   try {
@@ -1236,6 +1384,14 @@ export async function seedInitialDatabaseIfEmpty() {
       getDocs(query(collection(db, 'calendar_events'), limit(500))),
       getDocs(query(collection(db, 'chat_messages'), limit(500))),
     ]);
+
+    // 0. Aplicar registro global de eliminados en tiempo real antes de cualquier reconciliación
+    const deletedConfigDoc = eventsSnap.docs.find(
+      d => d.id === 'config_deleted_ids' || d.data()?.date === 'CONFIG_DELETED_IDS'
+    );
+    if (deletedConfigDoc) {
+      applyRemoteDeletedIdsToVault(deletedConfigDoc.data()?.description);
+    }
 
     // 1. Asegurar que el Administrador Único (902050377) exista sin sobreescribir su contraseña ni sus datos si ya fue creado
     if (!adminDocSnap.exists()) {
@@ -1285,39 +1441,43 @@ export async function seedInitialDatabaseIfEmpty() {
       }
     }
 
-    // 2. Reconciliación automática: si hay datos guardados en la bóveda local que no estén aún en Firestore, restaurarlos sin borrar nada
+    // 2. Solo restaurar desde bóveda local si la colección remota está completamente vacía y el registro no fue eliminado
     const vault = readPermanentVault();
     const deletedUsers = new Set(vault.deletedUserCedulas);
     const deletedTasks = new Set(vault.deletedTaskIds);
     const deletedEvents = new Set(vault.deletedEventIds);
 
-    const remoteUserIds = new Set(usersSnap.docs.map(d => d.id));
-    for (const [ced, localUser] of Object.entries(vault.users)) {
-      if (ced && !remoteUserIds.has(ced) && !deletedUsers.has(ced)) {
-        await setDoc(doc(db, 'app_users', ced), sanitizeUserPayload(localUser), { merge: true });
+    if (usersSnap.empty) {
+      for (const [ced, localUser] of Object.entries(vault.users)) {
+        if (ced && !deletedUsers.has(ced)) {
+          await setDoc(doc(db, 'app_users', ced), sanitizeUserPayload(localUser), { merge: true });
+        }
       }
     }
 
-    const remoteTaskIds = new Set(tasksSnap.docs.map(d => d.id));
-    for (const [tId, localTask] of Object.entries(vault.tasks)) {
-      if (tId && !remoteTaskIds.has(tId) && !deletedTasks.has(tId)) {
-        await setDoc(doc(db, 'tasks', tId), sanitizeTaskPayload(localTask), { merge: true });
+    if (tasksSnap.empty) {
+      for (const [tId, localTask] of Object.entries(vault.tasks)) {
+        if (tId && !deletedTasks.has(tId)) {
+          await setDoc(doc(db, 'tasks', tId), sanitizeTaskPayload(localTask), { merge: true });
+        }
       }
     }
 
-    const remoteEventIds = new Set(eventsSnap.docs.map(d => d.id));
-    for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
-      if (evId && !remoteEventIds.has(evId) && !deletedEvents.has(evId)) {
-        const { id: _ignore, startTime: _st, endTime: _et, emoji: _em, ...evPayload } = localEv;
-        await setDoc(doc(db, 'calendar_events', evId), evPayload, { merge: true });
+    if (eventsSnap.empty) {
+      for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
+        if (evId && !deletedEvents.has(evId)) {
+          const { id: _ignore, startTime: _st, endTime: _et, emoji: _em, ...evPayload } = localEv;
+          await setDoc(doc(db, 'calendar_events', evId), evPayload, { merge: true });
+        }
       }
     }
 
-    const remoteChatIds = new Set(chatSnap.docs.map(d => d.id));
-    for (const [msgId, localMsg] of Object.entries(vault.chatMessages)) {
-      if (msgId && !remoteChatIds.has(msgId)) {
-        const { id: _ignore, ...msgPayload } = localMsg;
-        await setDoc(doc(db, 'chat_messages', msgId), msgPayload, { merge: true });
+    if (chatSnap.empty) {
+      for (const [msgId, localMsg] of Object.entries(vault.chatMessages)) {
+        if (msgId) {
+          const { id: _ignore, ...msgPayload } = localMsg;
+          await setDoc(doc(db, 'chat_messages', msgId), msgPayload, { merge: true });
+        }
       }
     }
   } catch (err) {

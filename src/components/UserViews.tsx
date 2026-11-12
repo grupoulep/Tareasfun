@@ -164,13 +164,15 @@ export const UserViews: React.FC<UserViewsProps> = ({
   activeSection = 'user_personal',
   currentUser,
   users = [],
-  tasks,
+  tasks: rawTasks,
   calendarEvents = [],
   onOpenNewTask,
   onEditTask,
   deviceMode = 'pc',
 }) => {
   const isMobile = deviceMode === 'mobile';
+  const [locallyDeletedTaskIds, setLocallyDeletedTaskIds] = useState<Record<string, boolean>>({});
+  const tasks = rawTasks.filter(t => !locallyDeletedTaskIds[t.id]);
 
   // Estados para la sección Eventos (Calendario del mes actual)
   const [calendarDate, setCalendarDate] = useState<Date>(() => new Date());
@@ -226,6 +228,28 @@ export const UserViews: React.FC<UserViewsProps> = ({
       setViewingAssignees([viewingTask.assignedToCedula || 'ABIERTA']);
     }
   }, [viewingTask?.id]);
+
+  // Sincronización en tiempo real de la tarea abierta en pantalla completa (si otro usuario la edita o elimina en línea)
+  useEffect(() => {
+    if (!viewingTask) return;
+    if (locallyDeletedTaskIds[viewingTask.id]) {
+      setViewingTask(null);
+      return;
+    }
+    const liveTask = rawTasks.find(t => t.id === viewingTask.id);
+    if (!liveTask) {
+      setViewingTask(null);
+    } else if (
+      liveTask.status !== viewingTask.status ||
+      liveTask.title !== viewingTask.title ||
+      liveTask.description !== viewingTask.description ||
+      liveTask.assignedToCedula !== viewingTask.assignedToCedula ||
+      liveTask.priority !== viewingTask.priority ||
+      liveTask.notes !== viewingTask.notes
+    ) {
+      setViewingTask(liveTask);
+    }
+  }, [rawTasks, locallyDeletedTaskIds]);
 
   // Ocultar o mostrar hechas
   const [showCompleted, setShowCompleted] = useState(true);
@@ -497,13 +521,14 @@ export const UserViews: React.FC<UserViewsProps> = ({
     }
   };
 
-  // Eliminar tarea
+  // Eliminar tarea en tiempo real
   const handleDelete = async (task: TaskItem) => {
-    if (!currentUser.canDeleteTasks && currentUser.role !== 'admin') return;
-    await deleteTaskFromFirestore(task.id);
+    if (!task || !task.id) return;
+    setLocallyDeletedTaskIds(prev => ({ ...prev, [task.id]: true }));
     if (viewingTask && viewingTask.id === task.id) {
       setViewingTask(null);
     }
+    await deleteTaskFromFirestore(task.id);
     await recordAuditLog({
       actorCedula: currentUser.cedula,
       actorName: currentUser.name,
@@ -1834,17 +1859,18 @@ export const UserViews: React.FC<UserViewsProps> = ({
                                 </button>
                               )}
 
-                              {/* Botón Eliminar (si tiene permisos) */}
-                              {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDelete(task)}
-                                  className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors flex items-center justify-center"
-                                  title="Eliminar tarea"
-                                >
-                                  <i className="fi fi-rr-trash text-xs" />
-                                </button>
-                              )}
+                              {/* Botón Eliminar en Tiempo Real */}
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  void handleDelete(task);
+                                }}
+                                className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors flex items-center justify-center"
+                                title="Eliminar tarea en tiempo real"
+                              >
+                                <i className="fi fi-rr-trash text-xs" />
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -1904,6 +1930,15 @@ export const UserViews: React.FC<UserViewsProps> = ({
                   <span>Edición restringida a Admin / Personal Autorizado</span>
                 </span>
               )}
+
+              <button
+                type="button"
+                onClick={() => void handleDelete(viewingTask)}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
+              >
+                <i className="fi fi-rr-trash text-xs" />
+                <span>Eliminar</span>
+              </button>
 
               <button
                 type="button"
@@ -2245,16 +2280,14 @@ export const UserViews: React.FC<UserViewsProps> = ({
           {/* Pie de Pantalla Completa */}
           <div className="px-4 sm:px-8 py-4 bg-white border-t border-[#D6EAFF] flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2">
-              {(currentUser.canDeleteTasks || currentUser.role === 'admin') && (
-                <button
-                  type="button"
-                  onClick={() => handleDelete(viewingTask)}
-                  className="min-h-[42px] px-4 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl flex items-center gap-1.5 transition-colors"
-                >
-                  <i className="fi fi-rr-trash text-xs" />
-                  <span>Eliminar Actividad</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => void handleDelete(viewingTask)}
+                className="min-h-[42px] px-4 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl flex items-center gap-1.5 transition-colors"
+              >
+                <i className="fi fi-rr-trash text-xs" />
+                <span>Eliminar Actividad</span>
+              </button>
               {canEditActivity && onEditTask && (
                 <button
                   type="button"

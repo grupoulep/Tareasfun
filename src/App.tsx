@@ -21,6 +21,7 @@ import {
   cleanId,
   readPermanentVault,
   syncCollectionToPermanentVault,
+  applyRemoteDeletedIdsToVault,
   readUserEventPermissions,
   USER_EVENT_PERMS_STORAGE_KEY,
   readUserCompleteTaskPermissions,
@@ -211,6 +212,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const refreshFromVault = () => {
+      const vault = readPermanentVault();
+      const deletedUsers = new Set(vault.deletedUserCedulas);
+      const deletedTasks = new Set(vault.deletedTaskIds);
+      const deletedEvents = new Set(vault.deletedEventIds);
+
+      setRawUsers(Object.values(vault.users).filter(u => !deletedUsers.has(u.cedula)));
+
+      const nextTasks = Object.values(vault.tasks).filter(t => !deletedTasks.has(t.id));
+      nextTasks.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+      setTasks(nextTasks);
+
+      const nextEvents = Object.values(vault.calendarEvents).filter(
+        ev =>
+          !deletedEvents.has(ev.id) &&
+          !ev.id.startsWith('config_') &&
+          !(ev.date && ev.date.startsWith('CONFIG_'))
+      );
+      setCalendarEvents(nextEvents);
+
+      const nextChat = Object.values(vault.chatMessages).sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      setChatMessages(nextChat);
+
+      const nextLogs = Object.values(vault.auditLogs).sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+      setAuditLogs(nextLogs);
+    };
+
     const handlePermsUpdated = () => {
       setEventPermsMap(readUserEventPermissions());
     };
@@ -223,11 +255,25 @@ export default function App() {
     const handleRecoverySecurityUpdated = () => {
       setRecoverySecurityMap(readRecoverySecurityStates());
     };
+    const handleStorageSync = (e: StorageEvent) => {
+      if (!e.key || e.key.startsWith('ulep_')) {
+        refreshFromVault();
+        setEventPermsMap(readUserEventPermissions());
+        setCompleteTaskPermsMap(readUserCompleteTaskPermissions());
+        setEditTaskPermsMap(readUserEditTaskPermissions());
+        setRecoverySecurityMap(readRecoverySecurityStates());
+      }
+    };
+
+    window.addEventListener('ulep_vault_updated', refreshFromVault);
+    window.addEventListener('storage', handleStorageSync);
     window.addEventListener('ulep_event_perms_updated', handlePermsUpdated);
     window.addEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
     window.addEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
     window.addEventListener('ulep_recovery_security_updated', handleRecoverySecurityUpdated);
     return () => {
+      window.removeEventListener('ulep_vault_updated', refreshFromVault);
+      window.removeEventListener('storage', handleStorageSync);
       window.removeEventListener('ulep_event_perms_updated', handlePermsUpdated);
       window.removeEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
       window.removeEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
@@ -241,9 +287,13 @@ export default function App() {
     const unsubUsers = onSnapshot(
       query(collection(db, 'app_users'), limit(500)),
       snap => {
+        const deletedUsers = new Set(readPermanentVault().deletedUserCedulas);
         const list: AppUser[] = [];
         snap.forEach(d => {
-          list.push(d.data() as AppUser);
+          const u = d.data() as AppUser;
+          if (u && u.cedula && !deletedUsers.has(u.cedula)) {
+            list.push(u);
+          }
         });
         syncCollectionToPermanentVault('users', list, u => u.cedula);
         setRawUsers(list);
@@ -255,9 +305,12 @@ export default function App() {
     const unsubTasks = onSnapshot(
       query(collection(db, 'tasks'), limit(500)),
       snap => {
+        const deletedTasks = new Set(readPermanentVault().deletedTaskIds);
         const list: TaskItem[] = [];
         snap.forEach(d => {
-          list.push({ ...(d.data() as Omit<TaskItem, 'id'>), id: d.id });
+          if (!deletedTasks.has(d.id)) {
+            list.push({ ...(d.data() as Omit<TaskItem, 'id'>), id: d.id });
+          }
         });
         list.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
         syncCollectionToPermanentVault('tasks', list, t => t.id);
@@ -298,6 +351,10 @@ export default function App() {
         const list: CalendarEvent[] = [];
         snap.forEach(d => {
           const docData = d.data() as Omit<CalendarEvent, 'id'>;
+          if (d.id === 'config_deleted_ids' || docData.date === 'CONFIG_DELETED_IDS') {
+            applyRemoteDeletedIdsToVault(docData.description);
+            return;
+          }
           if (d.id === 'config_event_permissions' || docData.date === 'CONFIG_PERMS') {
             try {
               const parsed = JSON.parse(docData.description || '{}');
@@ -370,7 +427,9 @@ export default function App() {
           ) {
             return;
           }
-          list.push({ ...docData, id: d.id });
+          if (!readPermanentVault().deletedEventIds.includes(d.id)) {
+            list.push({ ...docData, id: d.id });
+          }
         });
         syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
         setCalendarEvents(list);
