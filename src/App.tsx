@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   collection,
+  doc,
+  getDoc,
   onSnapshot,
   query,
   orderBy,
@@ -24,6 +26,10 @@ import {
   USER_COMPLETE_TASK_PERMS_STORAGE_KEY,
   readUserEditTaskPermissions,
   USER_EDIT_TASK_PERMS_STORAGE_KEY,
+  readRecoverySecurityStates,
+  writeRecoverySecurityState,
+  RECOVERY_SECURITY_STORAGE_KEY,
+  RecoverySecurityEntry,
 } from './firebase';
 import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
 import { AdminViews } from './components/AdminViews';
@@ -110,8 +116,13 @@ export default function App() {
         ev.id !== 'config_complete_task_permissions' &&
         ev.date !== 'CONFIG_COMPLETE_TASK_PERMS' &&
         ev.id !== 'config_edit_task_permissions' &&
-        ev.date !== 'CONFIG_EDIT_TASK_PERMS'
+        ev.date !== 'CONFIG_EDIT_TASK_PERMS' &&
+        ev.id !== 'config_recovery_security' &&
+        ev.date !== 'CONFIG_RECOVERY_SECURITY'
     )
+  );
+  const [recoverySecurityMap, setRecoverySecurityMap] = useState<Record<string, RecoverySecurityEntry>>(() =>
+    readRecoverySecurityStates()
   );
   const [loadingData, setLoadingData] = useState(() => Object.keys(readPermanentVault().users).length === 0);
 
@@ -131,6 +142,8 @@ export default function App() {
   const [recoverNewPassword, setRecoverNewPassword] = useState('');
   const [recoverConfirmPassword, setRecoverConfirmPassword] = useState('');
   const [recoverMaskedEmail, setRecoverMaskedEmail] = useState('funda....');
+  const [recoverGeneratedCode, setRecoverGeneratedCode] = useState<string | null>(null);
+  const [recoverEmailStatus, setRecoverEmailStatus] = useState<'sent' | 'missing_api_key' | 'error' | null>(null);
   const [recoverLoading, setRecoverLoading] = useState(false);
   const [recoverError, setRecoverError] = useState<string | null>(null);
 
@@ -208,13 +221,18 @@ export default function App() {
     const handleEditTaskPermsUpdated = () => {
       setEditTaskPermsMap(readUserEditTaskPermissions());
     };
+    const handleRecoverySecurityUpdated = () => {
+      setRecoverySecurityMap(readRecoverySecurityStates());
+    };
     window.addEventListener('ulep_event_perms_updated', handlePermsUpdated);
     window.addEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
     window.addEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
+    window.addEventListener('ulep_recovery_security_updated', handleRecoverySecurityUpdated);
     return () => {
       window.removeEventListener('ulep_event_perms_updated', handlePermsUpdated);
       window.removeEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
       window.removeEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
+      window.removeEventListener('ulep_recovery_security_updated', handleRecoverySecurityUpdated);
     };
   }, []);
 
@@ -329,6 +347,24 @@ export default function App() {
             }
             return;
           }
+          if (
+            d.id === 'config_recovery_security' ||
+            docData.date === 'CONFIG_RECOVERY_SECURITY'
+          ) {
+            try {
+              const parsed = JSON.parse(docData.description || '{}');
+              if (parsed && typeof parsed === 'object') {
+                window.localStorage.setItem(
+                  RECOVERY_SECURITY_STORAGE_KEY,
+                  JSON.stringify(parsed)
+                );
+                setRecoverySecurityMap(parsed);
+              }
+            } catch {
+              // ignore
+            }
+            return;
+          }
           list.push({ ...docData, id: d.id });
         });
         syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
@@ -372,35 +408,12 @@ export default function App() {
     tasksRef.current = tasks;
   }, [tasks]);
 
-  const readRecoverySecurityMap = (): Record<
-    string,
-    { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }
-  > => {
-    try {
-      const raw = localStorage.getItem('ulep_recovery_security_state_v1');
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  };
-
-  const writeRecoverySecurityState = (
-    cedula: string,
-    state: { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }
-  ) => {
-    try {
-      const map = readRecoverySecurityMap();
-      map[cedula] = state;
-      localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(map));
-    } catch {
-      // ignore
-    }
-  };
-
   const isUserLockedLocally = (cedula?: string): boolean => {
     if (!cedula) return false;
-    const map = readRecoverySecurityMap();
-    return Boolean(map[String(cedula).trim()]?.locked);
+    const cleanCed = String(cedula).trim();
+    if (cleanCed === SINGLE_ADMIN_CEDULA) return false;
+    const map = recoverySecurityMap;
+    return Boolean(map[cleanCed]?.locked);
   };
 
   const evaluateAndSendMilestoneAlerts = (taskList: TaskItem[]) => {
@@ -536,53 +549,102 @@ export default function App() {
     }
   };
 
+  const resolveTargetRecoveryUser = async (rawInput: string): Promise<AppUser | null> => {
+    const trimmed = rawInput.trim();
+    const cleanCed = trimmed.replace(/[^a-zA-Z0-9_\-]/g, '');
+    const foundLocal = users.find(
+      u =>
+        u.cedula === cleanCed ||
+        u.cedula === trimmed ||
+        (u.email && u.email.toLowerCase() === trimmed.toLowerCase())
+    );
+    if (foundLocal) return foundLocal;
+
+    if (cleanCed === SINGLE_ADMIN_CEDULA) {
+      return {
+        cedula: SINGLE_ADMIN_CEDULA,
+        name: 'Administrador Principal ULEP',
+        password: SINGLE_ADMIN_CEDULA,
+        role: 'admin',
+        email: 'grupoulep@gmail.com',
+        department: 'Dirección General / Ejecutiva',
+        approvalStatus: 'aprobado',
+        isOnline: false,
+        lastSeen: new Date().toISOString(),
+        canCreateTasks: true,
+        canEditTasks: true,
+        canDeleteTasks: true,
+        canSendChat: true,
+        canViewVault: true,
+        canExportReports: true,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    if (cleanCed) {
+      try {
+        const snap = await getDoc(doc(db, 'app_users', cleanCed));
+        if (snap.exists()) {
+          return snap.data() as AppUser;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  };
+
   const handleRequestRecoveryCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setRecoverError(null);
-    const cleanCed = recoverCedula.trim();
-    const targetUser = users.find(u => u.cedula === cleanCed);
-
-    if (!targetUser) {
-      setRecoverError('No se encontró ningún usuario registrado con ese número de cédula.');
-      return;
-    }
-
-    if (isUserLockedLocally(cleanCed) || targetUser.approvalStatus === 'rechazado') {
-      setRecoverError('Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.');
-      return;
-    }
-
-    const userRegisteredEmail = (targetUser.email || '').trim();
-    if (!userRegisteredEmail || !userRegisteredEmail.includes('@')) {
-      setRecoverError('Este usuario no tiene un correo electrónico válido registrado en su ficha.');
-      return;
-    }
-
     setRecoverLoading(true);
+
     try {
+      const targetUser = await resolveTargetRecoveryUser(recoverCedula);
+
+      if (!targetUser) {
+        setRecoverError('No se encontró ningún usuario registrado con ese número de cédula.');
+        return;
+      }
+
+      const isSingleAdmin = targetUser.cedula === SINGLE_ADMIN_CEDULA;
+
+      if (!isSingleAdmin && isUserLockedLocally(targetUser.cedula)) {
+        setRecoverError('Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.');
+        return;
+      }
+
+      const rawUserEmail = (targetUser.email || '').trim();
+      const effectiveEmail =
+        rawUserEmail &&
+        rawUserEmail.includes('@') &&
+        !rawUserEmail.toLowerCase().endsWith('@fundacionulep.org')
+          ? rawUserEmail
+          : isSingleAdmin
+          ? 'grupoulep@gmail.com'
+          : 'fundacionulep@gmail.com';
+
       const response = await fetch('/api/resend/send-recovery-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           cedula: targetUser.cedula,
           userName: targetUser.name,
-          userEmail: userRegisteredEmail,
-          isCurrentlyLocked: isUserLockedLocally(cleanCed),
+          userEmail: effectiveEmail,
+          isCurrentlyLocked: !isSingleAdmin && isUserLockedLocally(targetUser.cedula),
         }),
       });
 
       const data = await response.json().catch(() => ({}));
       if (data?.securityState) {
-        writeRecoverySecurityState(targetUser.cedula, data.securityState);
+        void writeRecoverySecurityState(targetUser.cedula, data.securityState);
       }
 
-      if (data?.locked) {
-        if (targetUser.cedula !== SINGLE_ADMIN_CEDULA) {
-          await saveUserToFirestore({
-            ...targetUser,
-            approvalStatus: 'rechazado',
-          });
-        }
+      if (!isSingleAdmin && data?.locked) {
+        await saveUserToFirestore({
+          ...targetUser,
+          approvalStatus: 'rechazado',
+        });
         await recordAuditLog({
           actorCedula: targetUser.cedula,
           actorName: targetUser.name,
@@ -604,9 +666,12 @@ export default function App() {
         return;
       }
 
-      const localPart = userRegisteredEmail.split('@')[0] || userRegisteredEmail;
+      const localPart = effectiveEmail.split('@')[0] || effectiveEmail;
       const fallbackMask = `${localPart.slice(0, Math.min(5, Math.max(3, Math.floor(localPart.length / 2))))}....`;
+      setRecoverCedula(targetUser.cedula);
       setRecoverMaskedEmail(data.maskedEmail || fallbackMask);
+      setRecoverGeneratedCode(data.code ? String(data.code) : null);
+      setRecoverEmailStatus(data.status || 'sent');
       setRecoverCodeInput('');
       setRecoverNewPassword('');
       setRecoverConfirmPassword('');
@@ -622,14 +687,15 @@ export default function App() {
     e.preventDefault();
     setRecoverError(null);
 
-    const cleanCed = recoverCedula.trim();
-    const targetUser = users.find(u => u.cedula === cleanCed);
+    const targetUser = await resolveTargetRecoveryUser(recoverCedula);
     if (!targetUser) {
       setRecoverError('Usuario no encontrado.');
       return;
     }
 
-    if (isUserLockedLocally(cleanCed) || targetUser.approvalStatus === 'rechazado') {
+    const isSingleAdmin = targetUser.cedula === SINGLE_ADMIN_CEDULA;
+
+    if (!isSingleAdmin && isUserLockedLocally(targetUser.cedula)) {
       setRecoverError('Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.');
       return;
     }
@@ -655,23 +721,21 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          cedula: cleanCed,
+          cedula: targetUser.cedula,
           code: recoverCodeInput.trim(),
         }),
       });
 
       const data = await response.json().catch(() => ({}));
       if (data?.securityState) {
-        writeRecoverySecurityState(cleanCed, data.securityState);
+        void writeRecoverySecurityState(targetUser.cedula, data.securityState);
       }
 
-      if (data?.locked) {
-        if (targetUser.cedula !== SINGLE_ADMIN_CEDULA) {
-          await saveUserToFirestore({
-            ...targetUser,
-            approvalStatus: 'rechazado',
-          });
-        }
+      if (!isSingleAdmin && data?.locked) {
+        await saveUserToFirestore({
+          ...targetUser,
+          approvalStatus: 'rechazado',
+        });
         await recordAuditLog({
           actorCedula: targetUser.cedula,
           actorName: targetUser.name,
@@ -694,7 +758,7 @@ export default function App() {
       }
 
       const newPwd = recoverNewPassword.trim();
-      if (targetUser.cedula === SINGLE_ADMIN_CEDULA) {
+      if (isSingleAdmin) {
         try {
           localStorage.setItem('taskflow_single_admin_pwd', newPwd);
         } catch {
@@ -705,6 +769,7 @@ export default function App() {
       await saveUserToFirestore({
         ...targetUser,
         password: newPwd,
+        approvalStatus: 'aprobado',
       });
 
       await recordAuditLog({
@@ -721,6 +786,8 @@ export default function App() {
       setLoginCedulaInput(targetUser.cedula);
       setLoginPasswordInput('');
       setLoginError(null);
+      setRecoverGeneratedCode(null);
+      setRecoverEmailStatus(null);
       setLoginSuccessMsg('Contraseña actualizada correctamente. Ya puedes iniciar sesión.');
       setAuthMode('login');
       setRecoverStep('cedula');
@@ -1145,8 +1212,29 @@ export default function App() {
                 </form>
               ) : (
                 <form onSubmit={handleVerifyAndResetPassword} className="space-y-4">
-                  <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-bold text-[#0B2559] text-center">
-                    Digite el código enviado al correo <span className="font-mono text-[#3B82F6]">{recoverMaskedEmail}</span>
+                  <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF] text-xs font-bold text-[#0B2559] text-center space-y-2">
+                    <div>
+                      Digite el código enviado al correo <span className="font-mono text-[#3B82F6]">{recoverMaskedEmail}</span>
+                    </div>
+                    {recoverGeneratedCode && recoverEmailStatus !== 'sent' && (
+                      <div className="p-2.5 rounded-lg bg-white border border-[#B3D9FF] text-[11px] text-[#0B2559] flex flex-col items-center gap-1.5">
+                        <span className="text-[#3B82F6] font-semibold">
+                          Notificación de Recuperación Directa (Código Generado):
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="px-3 py-1 rounded-lg bg-[#EAF3FF] border border-[#7CC0FF] font-mono text-sm font-extrabold tracking-widest text-[#0B2559]">
+                            {recoverGeneratedCode}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setRecoverCodeInput(recoverGeneratedCode)}
+                            className="px-2.5 py-1 rounded-lg bg-[#0B2559] text-white text-[10px] font-bold hover:bg-[#163A82] transition-colors"
+                          >
+                            Usar Código
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div>

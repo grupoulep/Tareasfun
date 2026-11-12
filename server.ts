@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -273,21 +274,34 @@ interface UserRecoverySecurityState {
 const userRecoverySecurityMap = new Map<string, UserRecoverySecurityState>();
 
 function getOrInitSecurityState(cedula: string): UserRecoverySecurityState {
-  const existing = userRecoverySecurityMap.get(cedula);
+  const cleanCed = String(cedula || '').trim();
+  if (cleanCed === SINGLE_ADMIN_CEDULA) {
+    const adminState: UserRecoverySecurityState = {
+      cedula: cleanCed,
+      sendAttempts: 0,
+      verifyAttempts: 0,
+      locked: false,
+    };
+    userRecoverySecurityMap.set(cleanCed, adminState);
+    return adminState;
+  }
+  const existing = userRecoverySecurityMap.get(cleanCed);
   if (existing) return existing;
   const fresh: UserRecoverySecurityState = {
-    cedula,
+    cedula: cleanCed,
     sendAttempts: 0,
     verifyAttempts: 0,
     locked: false,
   };
-  userRecoverySecurityMap.set(cedula, fresh);
+  userRecoverySecurityMap.set(cleanCed, fresh);
   return fresh;
 }
 
 function isUserLockedForEmailsAndAccount(cedula?: string): boolean {
   if (!cedula) return false;
-  return Boolean(userRecoverySecurityMap.get(String(cedula).trim())?.locked);
+  const cleanCed = String(cedula).trim();
+  if (cleanCed === SINGLE_ADMIN_CEDULA) return false;
+  return Boolean(userRecoverySecurityMap.get(cleanCed)?.locked);
 }
 
 function maskEmailStartOnly(email: string): string {
@@ -363,22 +377,25 @@ async function startServer() {
 
   app.post('/api/resend/send-recovery-code', async (req, res) => {
     try {
-      const cedula = String(req.body?.cedula || '').trim();
+      const cedula = String(req.body?.cedula || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_\-]/g, '');
       const userName = String(req.body?.userName || 'Usuario').trim();
-      const userEmail = String(req.body?.userEmail || req.body?.recoveryEmailOverride || '').trim();
+      const rawUserEmail = String(req.body?.userEmail || req.body?.recoveryEmailOverride || '').trim();
       const clientLocked = Boolean(req.body?.isCurrentlyLocked);
+      const isSingleAdmin = cedula === SINGLE_ADMIN_CEDULA;
 
       if (!cedula) {
         return res.status(400).json({ error: 'Debes ingresar el número de cédula.' });
       }
 
       const secState = getOrInitSecurityState(cedula);
-      if (clientLocked && !secState.locked) {
+      if (!isSingleAdmin && clientLocked && !secState.locked) {
         secState.locked = true;
         secState.lockedAt = new Date().toISOString();
       }
 
-      if (secState.locked) {
+      if (!isSingleAdmin && secState.locked) {
         return res.status(403).json({
           locked: true,
           error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
@@ -386,26 +403,31 @@ async function startServer() {
         });
       }
 
-      if (!userEmail || !userEmail.includes('@')) {
-        return res.status(400).json({
-          error: 'Este usuario no tiene un correo válido registrado en su ficha.',
-        });
+      // Si el correo en ficha está vacío o es el dominio interno por defecto (@fundacionulep.org), usar el correo institucional de recuperación
+      const targetEmail =
+        rawUserEmail &&
+        rawUserEmail.includes('@') &&
+        !rawUserEmail.toLowerCase().endsWith('@fundacionulep.org')
+          ? rawUserEmail
+          : isSingleAdmin
+          ? 'grupoulep@gmail.com'
+          : recoveryEmailRecipient || RESEND_EXCLUSIVE_RECIPIENT;
+
+      // Tiene 2 intentos; al 3er intento se bloquea la cuenta y el envío de correos de ese usuario (excepto el Admin Único)
+      if (!isSingleAdmin) {
+        secState.sendAttempts += 1;
+        if (secState.sendAttempts >= 3) {
+          secState.locked = true;
+          secState.lockedAt = new Date().toISOString();
+          activeRecoveryCodes.delete(cedula);
+          return res.status(403).json({
+            locked: true,
+            error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+            securityState: secState,
+          });
+        }
       }
 
-      // Tiene 2 intentos; al 3er intento se bloquea la cuenta y el envío de correos de ese usuario
-      secState.sendAttempts += 1;
-      if (secState.sendAttempts >= 3) {
-        secState.locked = true;
-        secState.lockedAt = new Date().toISOString();
-        activeRecoveryCodes.delete(cedula);
-        return res.status(403).json({
-          locked: true,
-          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
-          securityState: secState,
-        });
-      }
-
-      const targetEmail = userEmail;
       const code = String(Math.floor(100000 + Math.random() * 900000));
       const nowIso = new Date().toISOString();
 
@@ -418,49 +440,96 @@ async function startServer() {
         expiresAt: Date.now() + 15 * 60 * 1000,
       });
 
-      const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
-      const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>').trim();
+      const resendApiKey = (
+        process.env.RESEND_API_KEY ||
+        process.env.VITE_RESEND_API_KEY ||
+        ''
+      ).trim();
+      const fromEmail = (
+        process.env.RESEND_FROM_EMAIL || 'Fundacion ULEP <onboarding@resend.dev>'
+      ).trim();
 
       let emailStatus: 'sent' | 'missing_api_key' | 'error' = 'missing_api_key';
+      let deliveredTo = targetEmail;
+      let resendErrorDetail = '';
+
+      const emailHtml = `
+        <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
+          <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
+            <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
+          </div>
+          <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
+            <p style="font-size: 14px; margin-top: 0;">Solicitud de recuperación para <strong>${userName}</strong> (C.C. ${cedula})</p>
+            <p style="font-size: 12px; color: #3B82F6; margin: 4px 0;">Correo asociado: <strong>${targetEmail}</strong></p>
+            <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
+              ${code}
+            </div>
+            <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
+          </div>
+        </div>
+      `;
 
       if (resendApiKey) {
-        const emailHtml = `
-          <div style="font-family: Roboto, Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #B3D9FF; border-radius: 12px; overflow: hidden; background-color: #FFFFFF;">
-            <div style="background-color: #0B2559; color: #FFFFFF; padding: 18px 24px;">
-              <h2 style="margin: 0; font-size: 16px;">Recuperación de Contraseña — Fundación ULEP</h2>
-            </div>
-            <div style="padding: 24px; color: #0B2559; background-color: #F4F9FF; text-align: center;">
-              <p style="font-size: 14px; margin-top: 0;">Solicitud de recuperación para <strong>${userName}</strong> (C.C. ${cedula})</p>
-              <div style="margin: 20px auto; padding: 16px 24px; background-color: #FFFFFF; border: 2px solid #0B2559; border-radius: 12px; display: inline-block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #0B2559;">
-                ${code}
-              </div>
-              <p style="font-size: 12px; color: #3B82F6; margin-bottom: 0;">Este código es válido por 15 minutos.</p>
-            </div>
-          </div>
-        `;
+        const candidateRecipients = Array.from(
+          new Set([targetEmail, recoveryEmailRecipient, RESEND_EXCLUSIVE_RECIPIENT, 'grupoulep@gmail.com'].filter(Boolean))
+        );
 
-        const response = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${resendApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            from: fromEmail,
-            to: [targetEmail],
-            subject: `Código de Recuperación de Contraseña: ${code} — Fundación ULEP`,
-            text: `Código de recuperación de contraseña para ${userName} (C.C. ${cedula}): ${code}`,
-            html: emailHtml,
-          }),
-        });
+        for (const recipientCandidate of candidateRecipients) {
+          try {
+            const response = await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${resendApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                from: fromEmail,
+                to: [recipientCandidate],
+                subject: `Código de Recuperación de Contraseña: ${code} — Fundación ULEP`,
+                text: `Código de recuperación de contraseña para ${userName} (C.C. ${cedula}): ${code}`,
+                html: emailHtml,
+              }),
+            });
 
-        emailStatus = response.ok ? 'sent' : 'error';
+            if (response.ok) {
+              emailStatus = 'sent';
+              deliveredTo = recipientCandidate;
+              resendErrorDetail = '';
+              break;
+            } else {
+              const errData = (await response.json().catch(() => ({}))) as { message?: string };
+              resendErrorDetail = errData.message || `HTTP ${response.status}`;
+              emailStatus = 'error';
+            }
+          } catch (fetchErr) {
+            resendErrorDetail = fetchErr instanceof Error ? fetchErr.message : 'Error de red con Resend';
+            emailStatus = 'error';
+          }
+        }
       }
+
+      // Registrar en el historial de despachos para consulta del Admin
+      const historyKey = `recovery_${cedula}_${Date.now()}`;
+      sentNotificationsMap.set(historyKey, {
+        recordKey: historyKey,
+        taskId: `recovery_${cedula}`,
+        taskTitle: `Recuperación de Contraseña (${userName})`,
+        assignedToName: `${userName} (C.C. ${cedula})`,
+        dueDate: nowIso,
+        milestoneHours: 24,
+        recipient: deliveredTo,
+        messageText: `Código de recuperación generado para ${userName} (C.C. ${cedula}) enviado a ${deliveredTo}: ${code}`,
+        sentAt: nowIso,
+        status: emailStatus === 'sent' ? 'sent' : 'missing_api_key',
+        errorDetail: resendErrorDetail || undefined,
+      });
 
       return res.json({
         ok: true,
         status: emailStatus,
-        maskedEmail: maskEmailStartOnly(targetEmail),
+        code,
+        deliveredTo,
+        maskedEmail: maskEmailStartOnly(deliveredTo),
         securityState: secState,
       });
     } catch (error: unknown) {
@@ -471,11 +540,14 @@ async function startServer() {
   });
 
   app.post('/api/resend/verify-recovery-code', (req, res) => {
-    const cedula = String(req.body?.cedula || '').trim();
+    const cedula = String(req.body?.cedula || '')
+      .trim()
+      .replace(/[^a-zA-Z0-9_\-]/g, '');
     const code = String(req.body?.code || '').trim();
+    const isSingleAdmin = cedula === SINGLE_ADMIN_CEDULA;
 
     const secState = getOrInitSecurityState(cedula);
-    if (secState.locked) {
+    if (!isSingleAdmin && secState.locked) {
       return res.status(403).json({
         valid: false,
         locked: true,
@@ -486,17 +558,19 @@ async function startServer() {
 
     const entry = activeRecoveryCodes.get(cedula);
     if (!entry || Date.now() > entry.expiresAt || entry.code !== code) {
-      secState.verifyAttempts += 1;
-      if (secState.verifyAttempts >= 3) {
-        secState.locked = true;
-        secState.lockedAt = new Date().toISOString();
-        activeRecoveryCodes.delete(cedula);
-        return res.status(403).json({
-          valid: false,
-          locked: true,
-          error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
-          securityState: secState,
-        });
+      if (!isSingleAdmin) {
+        secState.verifyAttempts += 1;
+        if (secState.verifyAttempts >= 3) {
+          secState.locked = true;
+          secState.lockedAt = new Date().toISOString();
+          activeRecoveryCodes.delete(cedula);
+          return res.status(403).json({
+            valid: false,
+            locked: true,
+            error: 'Cuenta y envío de correos bloqueados. Solo el Administrador puede desbloquearla.',
+            securityState: secState,
+          });
+        }
       }
       return res.status(400).json({
         valid: false,

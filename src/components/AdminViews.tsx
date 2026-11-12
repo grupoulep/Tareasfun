@@ -6,6 +6,10 @@ import {
   deleteTaskFromFirestore,
   recordAuditLog,
   clearAllAuditLogsFromFirestore,
+  readRecoverySecurityStates,
+  writeRecoverySecurityState,
+  RECOVERY_SECURITY_STORAGE_KEY,
+  RecoverySecurityEntry,
 } from '../firebase';
 import {
   generateAuditAndTasksPDF,
@@ -399,62 +403,41 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [userRecoveryEmails, setUserRecoveryEmails] = useState<Record<string, string>>({});
   const [recoveryConfigSavedMsg, setRecoveryConfigSavedMsg] = useState<string | null>(null);
   const [recoverySecurityStates, setRecoverySecurityStates] = useState<
-    Record<string, { cedula: string; sendAttempts: number; verifyAttempts: number; locked: boolean; lockedAt?: string }>
-  >(() => {
-    try {
-      const raw = localStorage.getItem('ulep_recovery_security_state_v1');
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // ignore
-    }
-    return {};
-  });
+    Record<string, RecoverySecurityEntry>
+  >(() => readRecoverySecurityStates());
+
+  useEffect(() => {
+    const handleSyncSec = () => {
+      setRecoverySecurityStates(readRecoverySecurityStates());
+    };
+    window.addEventListener('ulep_recovery_security_updated', handleSyncSec);
+    return () => window.removeEventListener('ulep_recovery_security_updated', handleSyncSec);
+  }, []);
 
   const isUserLockedBySecurity = (u: AppUser): boolean => {
+    if (u.cedula === SINGLE_ADMIN_CEDULA) return false;
     return Boolean(recoverySecurityStates[u.cedula]?.locked) || u.approvalStatus === 'rechazado';
   };
 
   const handleUnlockUserAccountAndEmails = async (targetUser: AppUser) => {
+    const unlockedEntry: RecoverySecurityEntry = {
+      cedula: targetUser.cedula,
+      sendAttempts: 0,
+      verifyAttempts: 0,
+      locked: false,
+    };
     try {
-      const resp = await fetch('/api/resend/unlock-user', {
+      await fetch('/api/resend/unlock-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cedula: targetUser.cedula }),
       });
-      const data = await resp.json();
-      if (data?.securityStates && typeof data.securityStates === 'object') {
-        setRecoverySecurityStates(data.securityStates);
-        localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(data.securityStates));
-      } else {
-        setRecoverySecurityStates(prev => {
-          const next = {
-            ...prev,
-            [targetUser.cedula]: {
-              cedula: targetUser.cedula,
-              sendAttempts: 0,
-              verifyAttempts: 0,
-              locked: false,
-            },
-          };
-          localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(next));
-          return next;
-        });
-      }
     } catch {
-      setRecoverySecurityStates(prev => {
-        const next = {
-          ...prev,
-          [targetUser.cedula]: {
-            cedula: targetUser.cedula,
-            sendAttempts: 0,
-            verifyAttempts: 0,
-            locked: false,
-          },
-        };
-        localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(next));
-        return next;
-      });
+      // ignore
     }
+
+    await writeRecoverySecurityState(targetUser.cedula, unlockedEntry);
+    setRecoverySecurityStates(readRecoverySecurityStates());
 
     await saveUserToFirestore({
       ...targetUser,
@@ -511,7 +494,15 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
         if (data?.securityStates && typeof data.securityStates === 'object') {
           setRecoverySecurityStates(prev => {
             const merged = { ...prev, ...data.securityStates };
-            localStorage.setItem('ulep_recovery_security_state_v1', JSON.stringify(merged));
+            if (merged[SINGLE_ADMIN_CEDULA]) {
+              merged[SINGLE_ADMIN_CEDULA] = {
+                cedula: SINGLE_ADMIN_CEDULA,
+                sendAttempts: 0,
+                verifyAttempts: 0,
+                locked: false,
+              };
+            }
+            localStorage.setItem(RECOVERY_SECURITY_STORAGE_KEY, JSON.stringify(merged));
             return merged;
           });
         }

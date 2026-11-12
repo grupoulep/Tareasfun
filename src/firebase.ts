@@ -470,6 +470,82 @@ export async function writeUserEditTaskPermission(cedula: string, allowed: boole
   }
 }
 
+export const RECOVERY_SECURITY_STORAGE_KEY = 'ulep_recovery_security_state_v2';
+
+export interface RecoverySecurityEntry {
+  cedula: string;
+  sendAttempts: number;
+  verifyAttempts: number;
+  locked: boolean;
+  lockedAt?: string;
+}
+
+export function readRecoverySecurityStates(): Record<string, RecoverySecurityEntry> {
+  if (typeof window === 'undefined') return {};
+  try {
+    // Limpiar bloqueos antiguos de pruebas previas en v1
+    window.localStorage.removeItem('ulep_recovery_security_state_v1');
+    const raw = window.localStorage.getItem(RECOVERY_SECURITY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    if (parsed[SINGLE_ADMIN_CEDULA]) {
+      parsed[SINGLE_ADMIN_CEDULA] = {
+        cedula: SINGLE_ADMIN_CEDULA,
+        sendAttempts: 0,
+        verifyAttempts: 0,
+        locked: false,
+      };
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+export async function writeRecoverySecurityState(
+  cedula: string,
+  state: RecoverySecurityEntry
+) {
+  const cleanCed = String(cedula || '').trim();
+  if (!cleanCed) return;
+  const currentMap = readRecoverySecurityStates();
+  const safeState: RecoverySecurityEntry =
+    cleanCed === SINGLE_ADMIN_CEDULA
+      ? { cedula: cleanCed, sendAttempts: 0, verifyAttempts: 0, locked: false }
+      : state;
+  const nextMap: Record<string, RecoverySecurityEntry> = {
+    ...currentMap,
+    [cleanCed]: safeState,
+  };
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(RECOVERY_SECURITY_STORAGE_KEY, JSON.stringify(nextMap));
+      window.dispatchEvent(new Event('ulep_recovery_security_updated'));
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', 'config_recovery_security'),
+      {
+        title: 'Configuracion Seguridad Recuperacion',
+        date: 'CONFIG_RECOVERY_SECURITY',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(nextMap).slice(0, 500),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: 'CONFIG_RECOVERY_SECURITY',
+      },
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+}
+
 export function hydrateCalendarEvent(raw: CalendarEvent): CalendarEvent {
   let startTime = raw.startTime || '';
   let endTime = raw.endTime || '';
