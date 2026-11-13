@@ -14,11 +14,14 @@ export const createPool = () => {
       password: process.env.SQL_PASSWORD,
       database: process.env.SQL_DB_NAME,
       max: 10,
+      idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 15000,
+      allowExitOnIdle: true,
+      keepAlive: true,
     });
 
-    global._postgresPool.on('error', (err) => {
-      console.error('Unexpected error on idle SQL pool client:', err);
+    global._postgresPool.on('error', () => {
+      // Absorb expected idle client disconnections when Cloud SQL scales to zero
     });
   }
   return global._postgresPool;

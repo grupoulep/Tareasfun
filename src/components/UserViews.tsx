@@ -284,15 +284,30 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Botón corredizo: Tareas Personales vs Tareas del Grupo Empresarial
   const [taskScope, setTaskScope] = useState<'personales' | 'grupo'>('personales');
+  const [hasAutoCheckedInitialScope, setHasAutoCheckedInitialScope] = useState(false);
+
+  // En Tareas Personales solo aparecen las tareas propias asignadas al usuario actual;
+  // en el otro apartado (Tareas del Grupo Empresarial) aparecen todas las tareas.
+  const isTaskVisibleInPersonal = (t: TaskItem) => {
+    const assigned = String(t.assignedToCedula || '').trim();
+    const created = String(t.createdByCedula || '').trim();
+    const myCed = String(currentUser.cedula || '').trim();
+    return assigned === myCed || (!assigned && created === myCed);
+  };
+
+  useEffect(() => {
+    if (!hasAutoCheckedInitialScope && tasks.length > 0) {
+      setHasAutoCheckedInitialScope(true);
+      const ownCount = tasks.filter(isTaskVisibleInPersonal).length;
+      if (ownCount === 0) {
+        setTaskScope('grupo');
+      }
+    }
+  }, [tasks.length, hasAutoCheckedInitialScope]);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('ulep_task_scope_changed', { detail: taskScope }));
   }, [taskScope]);
-
-  // En Tareas Personales solo aparecen las tareas propias asignadas al usuario actual;
-  // en el otro apartado (Tareas del Grupo Empresarial) aparecen todas las tareas.
-  const isTaskVisibleInPersonal = (t: TaskItem) =>
-    String(t.assignedToCedula || '').trim() === String(currentUser.cedula || '').trim();
 
   // Tareas base según la sección activa (Tareas Propias del usuario vs Todas las Tareas)
   const sectionTasks = tasks.filter(t =>

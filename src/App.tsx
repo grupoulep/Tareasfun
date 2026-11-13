@@ -314,8 +314,8 @@ export default function App() {
             list.push(u);
           }
         });
-        syncCollectionToPermanentVault('users', list, u => u.cedula);
-        setRawUsers(list);
+        const mergedUsers = syncCollectionToPermanentVault('users', list, u => u.cedula);
+        setRawUsers(mergedUsers);
         setLoadingData(false);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'app_users')
@@ -331,9 +331,9 @@ export default function App() {
             list.push({ ...(d.data() as Omit<TaskItem, 'id'>), id: d.id });
           }
         });
-        list.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-        syncCollectionToPermanentVault('tasks', list, t => t.id);
-        setTasks(list);
+        const mergedTasks = syncCollectionToPermanentVault('tasks', list, t => t.id);
+        mergedTasks.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        setTasks(mergedTasks);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'tasks')
     );
@@ -345,8 +345,11 @@ export default function App() {
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<AuditLog, 'id'>), id: d.id });
         });
-        syncCollectionToPermanentVault('auditLogs', list, l => l.id);
-        setAuditLogs(list);
+        const mergedLogs = syncCollectionToPermanentVault('auditLogs', list, l => l.id);
+        mergedLogs.sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+        setAuditLogs(mergedLogs);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'audit_logs')
     );
@@ -358,8 +361,11 @@ export default function App() {
         snap.forEach(d => {
           list.push({ ...(d.data() as Omit<ChatMessage, 'id'>), id: d.id });
         });
-        syncCollectionToPermanentVault('chatMessages', list, m => m.id);
-        setChatMessages(list);
+        const mergedChat = syncCollectionToPermanentVault('chatMessages', list, m => m.id);
+        mergedChat.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+        setChatMessages(mergedChat);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'chat_messages')
     );
@@ -469,13 +475,15 @@ export default function App() {
             list.push({ ...docData, id: d.id });
           }
         });
-        remoteAdBanners.sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        writeAdBannersLocal(remoteAdBanners, false);
-        setAdBanners(remoteAdBanners);
-        syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
-        setCalendarEvents(list);
+        if (remoteAdBanners.length > 0) {
+          remoteAdBanners.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          writeAdBannersLocal(remoteAdBanners, false);
+          setAdBanners(remoteAdBanners);
+        }
+        const mergedEvents = syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
+        setCalendarEvents(mergedEvents);
       },
       err => handleFirestoreError(err, OperationType.LIST, 'calendar_events')
     );
@@ -2119,9 +2127,12 @@ export default function App() {
 
   const sidebarScopedTasks =
     activePanelMode === 'user' && sidebarTaskScope === 'personales' && currentUser
-      ? tasks.filter(
-          t => String(t.assignedToCedula || '').trim() === String(currentUser.cedula || '').trim()
-        )
+      ? tasks.filter(t => {
+          const assigned = String(t.assignedToCedula || '').trim();
+          const created = String(t.createdByCedula || '').trim();
+          const myCed = String(currentUser.cedula || '').trim();
+          return assigned === myCed || (!assigned && created === myCed);
+        })
       : tasks;
 
   const pendingUserTasksCount = sidebarScopedTasks.filter(t => t.status !== 'completada').length;

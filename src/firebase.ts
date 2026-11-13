@@ -22,6 +22,7 @@ export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
 
 export const PERMANENT_VAULT_STORAGE_KEY = 'ulep_permanent_vault_v1';
+export const PERMANENT_VAULT_BACKUP_KEY = 'ulep_permanent_vault_backup_v1';
 
 export interface PermanentDataVault {
   users: Record<string, AppUser>;
@@ -51,30 +52,57 @@ export function readPermanentVault(): PermanentDataVault {
   }
   try {
     const raw = window.localStorage.getItem(PERMANENT_VAULT_STORAGE_KEY);
-    if (!raw) {
-      return {
-        users: {},
-        tasks: {},
-        calendarEvents: {},
-        chatMessages: {},
-        auditLogs: {},
-        deletedUserCedulas: [],
-        deletedTaskIds: [],
-        deletedEventIds: [],
-        updatedAt: new Date().toISOString(),
-      };
+    const backupRaw = window.localStorage.getItem(PERMANENT_VAULT_BACKUP_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Partial<PermanentDataVault>) : {};
+    const backup = backupRaw ? (JSON.parse(backupRaw) as Partial<PermanentDataVault>) : {};
+
+    const deletedUsers = new Set<string>([
+      ...(Array.isArray(backup.deletedUserCedulas) ? backup.deletedUserCedulas : []),
+      ...(Array.isArray(parsed.deletedUserCedulas) ? parsed.deletedUserCedulas : []),
+    ]);
+    const deletedTasks = new Set<string>([
+      ...(Array.isArray(backup.deletedTaskIds) ? backup.deletedTaskIds : []),
+      ...(Array.isArray(parsed.deletedTaskIds) ? parsed.deletedTaskIds : []),
+    ]);
+    const deletedEvents = new Set<string>([
+      ...(Array.isArray(backup.deletedEventIds) ? backup.deletedEventIds : []),
+      ...(Array.isArray(parsed.deletedEventIds) ? parsed.deletedEventIds : []),
+    ]);
+
+    const mergedUsers: Record<string, AppUser> = {
+      ...(backup.users || {}),
+      ...(parsed.users || {}),
+    };
+    for (const c of deletedUsers) {
+      if (c !== SINGLE_ADMIN_CEDULA) delete mergedUsers[c];
     }
-    const parsed = JSON.parse(raw) as Partial<PermanentDataVault>;
+
+    const mergedTasks: Record<string, TaskItem> = {
+      ...(backup.tasks || {}),
+      ...(parsed.tasks || {}),
+    };
+    for (const tId of deletedTasks) {
+      delete mergedTasks[tId];
+    }
+
+    const mergedEvents: Record<string, CalendarEvent> = {
+      ...(backup.calendarEvents || {}),
+      ...(parsed.calendarEvents || {}),
+    };
+    for (const evId of deletedEvents) {
+      delete mergedEvents[evId];
+    }
+
     return {
-      users: parsed.users || {},
-      tasks: parsed.tasks || {},
-      calendarEvents: parsed.calendarEvents || {},
-      chatMessages: parsed.chatMessages || {},
-      auditLogs: parsed.auditLogs || {},
-      deletedUserCedulas: Array.isArray(parsed.deletedUserCedulas) ? parsed.deletedUserCedulas : [],
-      deletedTaskIds: Array.isArray(parsed.deletedTaskIds) ? parsed.deletedTaskIds : [],
-      deletedEventIds: Array.isArray(parsed.deletedEventIds) ? parsed.deletedEventIds : [],
-      updatedAt: parsed.updatedAt || new Date().toISOString(),
+      users: mergedUsers,
+      tasks: mergedTasks,
+      calendarEvents: mergedEvents,
+      chatMessages: { ...(backup.chatMessages || {}), ...(parsed.chatMessages || {}) },
+      auditLogs: { ...(backup.auditLogs || {}), ...(parsed.auditLogs || {}) },
+      deletedUserCedulas: Array.from(deletedUsers),
+      deletedTaskIds: Array.from(deletedTasks),
+      deletedEventIds: Array.from(deletedEvents),
+      updatedAt: parsed.updatedAt || backup.updatedAt || new Date().toISOString(),
     };
   } catch {
     return {
@@ -107,7 +135,9 @@ export function writePermanentVault(vault: PermanentDataVault, notifyListeners =
   if (typeof window === 'undefined') return;
   try {
     vault.updatedAt = new Date().toISOString();
-    window.localStorage.setItem(PERMANENT_VAULT_STORAGE_KEY, JSON.stringify(vault));
+    const serialized = JSON.stringify(vault);
+    window.localStorage.setItem(PERMANENT_VAULT_STORAGE_KEY, serialized);
+    window.localStorage.setItem(PERMANENT_VAULT_BACKUP_KEY, serialized);
     if (notifyListeners) {
       window.dispatchEvent(new CustomEvent('ulep_vault_updated'));
       try {
@@ -125,13 +155,25 @@ export function syncCollectionToPermanentVault<T>(
   collectionType: 'users' | 'tasks' | 'calendarEvents' | 'chatMessages' | 'auditLogs',
   items: T[],
   getKey: (item: T) => string
-) {
+): T[] {
   const vault = readPermanentVault();
   const deletedTasks = new Set(vault.deletedTaskIds);
   const deletedUsers = new Set(vault.deletedUserCedulas);
   const deletedEvents = new Set(vault.deletedEventIds);
 
+  const existingMap = (vault[collectionType] as Record<string, T>) || {};
   const targetMap: Record<string, T> = {};
+
+  // Conservar todos los registros previos que NO hayan sido eliminados explícitamente
+  for (const [existingKey, existingItem] of Object.entries(existingMap)) {
+    if (!existingKey || !existingItem) continue;
+    if (collectionType === 'tasks' && deletedTasks.has(existingKey)) continue;
+    if (collectionType === 'users' && deletedUsers.has(existingKey)) continue;
+    if (collectionType === 'calendarEvents' && deletedEvents.has(existingKey)) continue;
+    targetMap[existingKey] = existingItem;
+  }
+
+  // Fusionar los registros entrantes desde Firestore
   for (const item of items) {
     const key = getKey(item);
     if (!key) continue;
@@ -140,8 +182,10 @@ export function syncCollectionToPermanentVault<T>(
     if (collectionType === 'calendarEvents' && deletedEvents.has(key)) continue;
     targetMap[key] = item;
   }
+
   (vault[collectionType] as Record<string, T>) = targetMap;
   writePermanentVault(vault, false);
+  return Object.values(targetMap);
 }
 
 export async function syncDeletedIdsToFirestore() {
@@ -298,10 +342,14 @@ export function cleanId(raw?: string): string {
 export function sanitizeUserPayload(user: AppUser) {
   const cleanCedula = String(user.cedula || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 20);
   const isSingleAdmin = cleanCedula === SINGLE_ADMIN_CEDULA;
+  const rawName = String(user.name || (isSingleAdmin ? 'Administrador Principal ULEP' : 'Usuario')).trim();
+  const safeName = (rawName.length < 2 ? `${rawName} ULEP` : rawName).slice(0, 100);
+  const rawPass = String(user.password || (isSingleAdmin ? SINGLE_ADMIN_CEDULA : '1234'));
+  const safePass = (rawPass.length < 4 ? rawPass.padEnd(4, '0') : rawPass).slice(0, 100);
   return {
-    cedula: cleanCedula,
-    name: String(user.name || (isSingleAdmin ? 'Administrador Principal ULEP' : 'Usuario')).trim().slice(0, 100),
-    password: String(user.password || (isSingleAdmin ? SINGLE_ADMIN_CEDULA : '1234')).slice(0, 100),
+    cedula: cleanCedula.length < 4 ? cleanCedula.padEnd(4, '0') : cleanCedula,
+    name: safeName,
+    password: safePass,
     role: isSingleAdmin ? 'admin' as const : 'user' as const,
     email: String(user.email || '').slice(0, 120),
     department: String(user.department || 'General').slice(0, 80),
@@ -343,8 +391,10 @@ export function sanitizeUserPayload(user: AppUser) {
 }
 
 export function sanitizeTaskPayload(task: Omit<TaskItem, 'id'>) {
+  const rawTitle = String(task.title || 'Sin título').trim();
+  const safeTitle = (rawTitle.length < 2 ? `${rawTitle} ` : rawTitle).slice(0, 180);
   return {
-    title: String(task.title || 'Sin título').trim().slice(0, 180),
+    title: safeTitle,
     description: String(task.description || '').slice(0, 2000),
     priority: (['baja', 'media', 'alta', 'critica'].includes(task.priority) ? task.priority : 'media') as TaskItem['priority'],
     status: (['pendiente', 'en_progreso', 'completada'].includes(task.status) ? task.status : 'pendiente') as TaskItem['status'],
@@ -1533,43 +1583,42 @@ export async function seedInitialDatabaseIfEmpty() {
       }
     }
 
-    // 2. Solo restaurar desde bóveda local si la colección remota está completamente vacía y el registro no fue eliminado
+    // 2. Asegurar que todos los registros existentes en la bóveda local que no hayan sido eliminados se preserven en Firestore
     const vault = readPermanentVault();
     const deletedUsers = new Set(vault.deletedUserCedulas);
     const deletedTasks = new Set(vault.deletedTaskIds);
     const deletedEvents = new Set(vault.deletedEventIds);
 
-    if (usersSnap.empty) {
-      for (const [ced, localUser] of Object.entries(vault.users)) {
-        if (ced && !deletedUsers.has(ced)) {
-          await setDoc(doc(db, 'app_users', ced), sanitizeUserPayload(localUser), { merge: true });
-        }
+    const remoteUserIds = new Set(usersSnap.docs.map(d => d.id));
+    for (const [ced, localUser] of Object.entries(vault.users)) {
+      if (ced && !deletedUsers.has(ced) && !remoteUserIds.has(ced)) {
+        await setDoc(doc(db, 'app_users', ced), sanitizeUserPayload(localUser), { merge: true }).catch(() => {});
       }
     }
 
-    if (tasksSnap.empty) {
-      for (const [tId, localTask] of Object.entries(vault.tasks)) {
-        if (tId && !deletedTasks.has(tId)) {
-          await setDoc(doc(db, 'tasks', tId), sanitizeTaskPayload(localTask), { merge: true });
-        }
+    const remoteTaskIds = new Set(tasksSnap.docs.map(d => d.id));
+    for (const [tId, localTask] of Object.entries(vault.tasks)) {
+      const cleanTaskId = cleanId(tId);
+      if (cleanTaskId && !deletedTasks.has(tId) && !deletedTasks.has(cleanTaskId) && !remoteTaskIds.has(cleanTaskId)) {
+        await setDoc(doc(db, 'tasks', cleanTaskId), sanitizeTaskPayload(localTask), { merge: true }).catch(() => {});
       }
     }
 
-    if (eventsSnap.empty) {
-      for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
-        if (evId && !deletedEvents.has(evId)) {
-          const { id: _ignore, startTime: _st, endTime: _et, emoji: _em, ...evPayload } = localEv;
-          await setDoc(doc(db, 'calendar_events', evId), evPayload, { merge: true });
-        }
+    const remoteEventIds = new Set(eventsSnap.docs.map(d => d.id));
+    for (const [evId, localEv] of Object.entries(vault.calendarEvents)) {
+      const cleanEvId = cleanId(evId);
+      if (cleanEvId && !deletedEvents.has(evId) && !deletedEvents.has(cleanEvId) && !remoteEventIds.has(cleanEvId)) {
+        const { id: _ignore, startTime: _st, endTime: _et, emoji: _em, ...evPayload } = localEv;
+        await setDoc(doc(db, 'calendar_events', cleanEvId), evPayload, { merge: true }).catch(() => {});
       }
     }
 
-    if (chatSnap.empty) {
-      for (const [msgId, localMsg] of Object.entries(vault.chatMessages)) {
-        if (msgId) {
-          const { id: _ignore, ...msgPayload } = localMsg;
-          await setDoc(doc(db, 'chat_messages', msgId), msgPayload, { merge: true });
-        }
+    const remoteChatIds = new Set(chatSnap.docs.map(d => d.id));
+    for (const [msgId, localMsg] of Object.entries(vault.chatMessages)) {
+      const cleanMsgId = cleanId(msgId);
+      if (cleanMsgId && !remoteChatIds.has(cleanMsgId)) {
+        const { id: _ignore, ...msgPayload } = localMsg;
+        await setDoc(doc(db, 'chat_messages', cleanMsgId), msgPayload, { merge: true }).catch(() => {});
       }
     }
   } catch (err) {
