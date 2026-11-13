@@ -105,6 +105,15 @@ export interface CalendarEvent {
   linkedTaskId: string;
 }
 
+export interface AdBannerItem {
+  id: string;
+  title?: string;
+  imageUrl: string;
+  linkUrl?: string;
+  active: boolean;
+  createdAt: string;
+}
+
 export interface DatabaseBackup {
   version: string;
   exportedAt: string;

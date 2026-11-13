@@ -65,8 +65,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
       try {
         const savedDraft = sessionStorage.getItem(DRAFT_STORAGE_KEY);
-        if (savedDraft) {
-          const parsed = JSON.parse(savedDraft);
+        const parsed = savedDraft ? JSON.parse(savedDraft) : null;
+        if (parsed && typeof parsed.title === 'string' && parsed.title.trim().length > 0) {
           setTitle(parsed.title ?? '');
           setDescription(parsed.description ?? '');
           setPriority(parsed.priority ?? 'alta');

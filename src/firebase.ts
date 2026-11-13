@@ -12,7 +12,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
+import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent, AdBannerItem } from './types';
 import { SINGLE_ADMIN_CEDULA } from './constants';
 import { refreshInMemoryIdToken } from './lib/firebase';
 
@@ -99,6 +99,7 @@ const realtimeBroadcastChannel =
 if (realtimeBroadcastChannel && typeof window !== 'undefined') {
   realtimeBroadcastChannel.onmessage = () => {
     window.dispatchEvent(new CustomEvent('ulep_vault_updated'));
+    window.dispatchEvent(new Event('ulep_publicidad_updated'));
   };
 }
 
@@ -455,6 +456,97 @@ export async function writeUserEventPermission(cedula: string, allowed: boolean)
     );
   } catch {
     // ignore if offline
+  }
+}
+
+export const PUBLICIDAD_BANNERS_STORAGE_KEY = 'ulep_publicidad_banners_v1';
+
+export function readAdBanners(): AdBannerItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(PUBLICIDAD_BANNERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(item => item && Boolean(item.imageUrl)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeAdBannersLocal(banners: AdBannerItem[], notify = true) {
+  if (typeof window === 'undefined') return;
+  try {
+    const cleanList = banners.filter(item => item && Boolean(item.imageUrl));
+    window.localStorage.setItem(PUBLICIDAD_BANNERS_STORAGE_KEY, JSON.stringify(cleanList));
+    if (notify) {
+      window.dispatchEvent(new Event('ulep_publicidad_updated'));
+      try {
+        realtimeBroadcastChannel?.postMessage({ updatedAt: new Date().toISOString() });
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export async function saveAdBannerToFirestore(ad: AdBannerItem) {
+  const cleanAdId = cleanId(ad.id || `ad_${Date.now()}`);
+  const normalizedAd: AdBannerItem = {
+    id: cleanAdId,
+    title: String(ad.title || '').trim().slice(0, 120),
+    imageUrl: String(ad.imageUrl || '').trim(),
+    linkUrl: String(ad.linkUrl || '').trim().slice(0, 500),
+    active: ad.active !== false,
+    createdAt: ad.createdAt || new Date().toISOString(),
+  };
+  if (!normalizedAd.imageUrl) return;
+
+  const existing = readAdBanners().filter(item => item.id !== cleanAdId);
+  const nextList = [normalizedAd, ...existing];
+  writeAdBannersLocal(nextList, true);
+
+  const docId = cleanId(`config_ad_${cleanAdId}`);
+  const safeTitle =
+    normalizedAd.title && normalizedAd.title.length >= 2
+      ? normalizedAd.title.slice(0, 140)
+      : 'Publicidad ULEP';
+
+  try {
+    await setDoc(
+      doc(db, 'calendar_events', docId),
+      {
+        title: safeTitle,
+        date: 'CONFIG_PUBLICIDAD',
+        time: '00:00',
+        type: 'actividad',
+        description: JSON.stringify(normalizedAd),
+        createdByCedula: SINGLE_ADMIN_CEDULA,
+        createdByName: 'Administrador',
+        linkedTaskId: cleanAdId,
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Error guardando publicidad en Firestore:', err);
+  }
+}
+
+export async function deleteAdBannerFromFirestore(adId: string) {
+  const cleanAdId = cleanId(adId);
+  const nextList = readAdBanners().filter(item => item.id !== adId && item.id !== cleanAdId);
+  writeAdBannersLocal(nextList, true);
+
+  const docId = cleanId(`config_ad_${cleanAdId}`);
+  const rawDocId = cleanId(`config_ad_${adId}`);
+  try {
+    await deleteDoc(doc(db, 'calendar_events', docId)).catch(() => {});
+    if (rawDocId !== docId) {
+      await deleteDoc(doc(db, 'calendar_events', rawDocId)).catch(() => {});
+    }
+  } catch {
+    // ignore
   }
 }
 

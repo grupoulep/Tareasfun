@@ -32,11 +32,13 @@ import {
   writeRecoverySecurityState,
   RECOVERY_SECURITY_STORAGE_KEY,
   RecoverySecurityEntry,
+  readAdBanners,
+  writeAdBannersLocal,
   callResendApi,
   requestRecoveryCodeCrossOrigin,
   verifyRecoveryCodeCrossOrigin,
 } from './firebase';
-import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from './types';
+import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent, AdBannerItem } from './types';
 import { AdminViews } from './components/AdminViews';
 import { UserViews } from './components/UserViews';
 import { TaskModal } from './components/TaskModal';
@@ -49,6 +51,7 @@ type NavSection =
   | 'admin_backup'
   | 'admin_resend'
   | 'admin_evaluation'
+  | 'admin_publicidad'
   | 'user_personal'
   | 'user_all_tasks'
   | 'user_priority_alerts'
@@ -123,6 +126,7 @@ export default function App() {
   const [recoverySecurityMap, setRecoverySecurityMap] = useState<Record<string, RecoverySecurityEntry>>(() =>
     readRecoverySecurityStates()
   );
+  const [adBanners, setAdBanners] = useState<AdBannerItem[]>(() => readAdBanners());
   const [loadingData, setLoadingData] = useState(() => Object.keys(readPermanentVault().users).length === 0);
 
   const [loggedCedula, setLoggedCedula] = useState<string | null>(() => {
@@ -181,6 +185,7 @@ export default function App() {
   const [activePanelMode, setActivePanelMode] = useState<'admin' | 'user'>('user');
   const [activeSection, setActiveSection] = useState<NavSection>('user_personal');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarTaskScope, setSidebarTaskScope] = useState<'personales' | 'grupo'>('personales');
 
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
@@ -255,6 +260,15 @@ export default function App() {
     const handleRecoverySecurityUpdated = () => {
       setRecoverySecurityMap(readRecoverySecurityStates());
     };
+    const handlePublicidadUpdated = () => {
+      setAdBanners(readAdBanners());
+    };
+    const handleTaskScopeChanged = (e: Event) => {
+      const detail = (e as CustomEvent<'personales' | 'grupo'>).detail;
+      if (detail === 'personales' || detail === 'grupo') {
+        setSidebarTaskScope(detail);
+      }
+    };
     const handleStorageSync = (e: StorageEvent) => {
       if (!e.key || e.key.startsWith('ulep_')) {
         refreshFromVault();
@@ -262,6 +276,7 @@ export default function App() {
         setCompleteTaskPermsMap(readUserCompleteTaskPermissions());
         setEditTaskPermsMap(readUserEditTaskPermissions());
         setRecoverySecurityMap(readRecoverySecurityStates());
+        setAdBanners(readAdBanners());
       }
     };
 
@@ -271,6 +286,8 @@ export default function App() {
     window.addEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
     window.addEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
     window.addEventListener('ulep_recovery_security_updated', handleRecoverySecurityUpdated);
+    window.addEventListener('ulep_publicidad_updated', handlePublicidadUpdated);
+    window.addEventListener('ulep_task_scope_changed', handleTaskScopeChanged);
     return () => {
       window.removeEventListener('ulep_vault_updated', refreshFromVault);
       window.removeEventListener('storage', handleStorageSync);
@@ -278,6 +295,8 @@ export default function App() {
       window.removeEventListener('ulep_complete_task_perms_updated', handleCompleteTaskPermsUpdated);
       window.removeEventListener('ulep_edit_task_perms_updated', handleEditTaskPermsUpdated);
       window.removeEventListener('ulep_recovery_security_updated', handleRecoverySecurityUpdated);
+      window.removeEventListener('ulep_publicidad_updated', handlePublicidadUpdated);
+      window.removeEventListener('ulep_task_scope_changed', handleTaskScopeChanged);
     };
   }, []);
 
@@ -349,8 +368,27 @@ export default function App() {
       query(collection(db, 'calendar_events'), limit(500)),
       snap => {
         const list: CalendarEvent[] = [];
+        const remoteAdBanners: AdBannerItem[] = [];
         snap.forEach(d => {
           const docData = d.data() as Omit<CalendarEvent, 'id'>;
+          if (d.id.startsWith('config_ad_') || docData.date === 'CONFIG_PUBLICIDAD') {
+            try {
+              const parsed = JSON.parse(docData.description || '{}');
+              if (parsed && typeof parsed === 'object' && parsed.imageUrl) {
+                remoteAdBanners.push({
+                  id: String(parsed.id || docData.linkedTaskId || d.id),
+                  title: String(parsed.title || ''),
+                  imageUrl: String(parsed.imageUrl),
+                  linkUrl: String(parsed.linkUrl || ''),
+                  active: parsed.active !== false,
+                  createdAt: String(parsed.createdAt || new Date().toISOString()),
+                });
+              }
+            } catch {
+              // ignore
+            }
+            return;
+          }
           if (d.id === 'config_deleted_ids' || docData.date === 'CONFIG_DELETED_IDS') {
             applyRemoteDeletedIdsToVault(docData.description);
             return;
@@ -431,6 +469,11 @@ export default function App() {
             list.push({ ...docData, id: d.id });
           }
         });
+        remoteAdBanners.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        writeAdBannersLocal(remoteAdBanners, false);
+        setAdBanners(remoteAdBanners);
         syncCollectionToPermanentVault('calendarEvents', list, ev => ev.id);
         setCalendarEvents(list);
       },
@@ -2058,6 +2101,12 @@ export default function App() {
       label: 'Evaluación',
       iconClass: 'fi fi-rr-chart-histogram',
     },
+    {
+      id: 'admin_publicidad',
+      label: 'Publicidad',
+      iconClass: 'fi fi-rr-picture',
+      badge: adBanners.filter(a => a.active && a.imageUrl).length || undefined,
+    },
   ];
 
   const urgentTasksCount = tasks.filter(
@@ -2068,7 +2117,14 @@ export default function App() {
         new Date(t.dueDate).getTime() - Date.now() <= 48 * 3600 * 1000)
   ).length;
 
-  const pendingUserTasksCount = tasks.filter(t => t.status !== 'completada').length;
+  const sidebarScopedTasks =
+    activePanelMode === 'user' && sidebarTaskScope === 'personales' && currentUser
+      ? tasks.filter(
+          t => String(t.assignedToCedula || '').trim() === String(currentUser.cedula || '').trim()
+        )
+      : tasks;
+
+  const pendingUserTasksCount = sidebarScopedTasks.filter(t => t.status !== 'completada').length;
   const userNavItems: {
     id: NavSection;
     label: string;
@@ -2090,6 +2146,23 @@ export default function App() {
   ];
 
   const currentNavList = activePanelMode === 'admin' ? adminNavItems : userNavItems;
+  const sidebarProgressPercent =
+    sidebarScopedTasks.length > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(
+              sidebarScopedTasks.reduce((acc, t) => {
+                if (t.status === 'completada') return acc + 100;
+                if (t.status === 'en_progreso')
+                  return acc + (typeof t.progress === 'number' && t.progress > 0 ? t.progress : 50);
+                return acc + (typeof t.progress === 'number' ? t.progress : 0);
+              }, 0) / sidebarScopedTasks.length
+            )
+          )
+        )
+      : 0;
 
   return (
     <div className={`relative min-h-screen bg-[#f4f9ff] flex flex-col ${isPcView ? 'lg:flex-row' : ''}`}>
@@ -2109,22 +2182,36 @@ export default function App() {
         } ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
         <div>
-          <div className="px-4 py-3.5 border-b border-[#B3D9FF]/20 flex items-center justify-between">
-            <img
-              src={`${import.meta.env.BASE_URL}assets/aistudio/FUN_BLANCO_e68e4ad5`}
-              alt="Fundación ULEP"
-              className="h-9 w-auto object-contain"
-              referrerPolicy="no-referrer"
-            />
-            {!isPcView && (
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(false)}
-                className="w-8 h-8 rounded-lg bg-white/10 text-white flex items-center justify-center"
-              >
-                <i className="fi fi-rr-cross-small text-base" />
-              </button>
-            )}
+          <div className="px-4 py-3.5 border-b border-[#B3D9FF]/20 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <img
+                src={`${import.meta.env.BASE_URL}assets/aistudio/FUN_BLANCO_e68e4ad5`}
+                alt="Fundación ULEP"
+                className="w-[1000px] h-[200px] object-contain"
+                referrerPolicy="no-referrer"
+              />
+              {!isPcView && (
+                <button
+                  type="button"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-8 h-8 rounded-lg bg-white/10 text-white flex items-center justify-center"
+                >
+                  <i className="fi fi-rr-cross-small text-base" />
+                </button>
+              )}
+            </div>
+            <div className="bg-white/10 rounded-xl p-3 border border-[#B3D9FF]/25">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h2 className="text-xs font-extrabold text-white tracking-wide">Avance</h2>
+                <span className="text-xs font-black text-[#B3D9FF]">{sidebarProgressPercent}%</span>
+              </div>
+              <div className="w-full h-2.5 bg-[#081b42] rounded-full overflow-hidden border border-[#B3D9FF]/30">
+                <div
+                  className="h-full bg-gradient-to-r from-[#0A56C2] via-[#1D8FFF] to-[#00C853] rounded-full transition-all duration-500"
+                  style={{ width: `${sidebarProgressPercent}%` }}
+                />
+              </div>
+            </div>
           </div>
 
           <nav className="p-3 space-y-1.5">
@@ -2172,22 +2259,8 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Pie del Sidebar con Usuario Conectado */}
-        <div className="p-4 border-t border-[#B3D9FF]/20 bg-[#081C45] space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-[#B3D9FF] font-bold flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              En línea
-            </span>
-            <span className="text-[10px] font-mono text-[#B3D9FF]/80">C.C. {currentUser.cedula}</span>
-          </div>
-          <div>
-            <div className="text-xs font-bold text-white truncate">{currentUser.name}</div>
-            <div className="text-[11px] text-[#B3D9FF]/80 truncate mt-0.5">
-              {currentUser.department}
-            </div>
-          </div>
-
+        {/* Pie del Sidebar */}
+        <div className="p-4 border-t border-[#B3D9FF]/20 bg-[#081C45]">
           <button
             type="button"
             onClick={handleLogout}
@@ -2211,17 +2284,6 @@ export default function App() {
             >
               <i className="fi fi-rr-menu-burger text-sm" />
             </button>
-            <div className="flex items-center gap-2 truncate">
-              <span className="text-xs sm:text-sm font-bold text-[#0B2559] truncate">
-                {activePanelMode === 'admin'
-                  ? isMobileView
-                    ? 'Panel Admin'
-                    : 'Panel de Control y Administración'
-                  : isMobileView
-                  ? 'Lista de Chequeo'
-                  : 'Lista de Chequeo · Fundación ULEP'}
-              </span>
-            </div>
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
@@ -2337,6 +2399,7 @@ export default function App() {
                   | 'admin_backup'
                   | 'admin_resend'
                   | 'admin_evaluation'
+                  | 'admin_publicidad'
               }
               currentUser={currentUser}
               users={users}
@@ -2344,6 +2407,7 @@ export default function App() {
               auditLogs={auditLogs}
               chatMessages={chatMessages}
               calendarEvents={calendarEvents}
+              adBanners={adBanners}
               deviceMode={effectiveDevice}
               onOpenNewTask={() => {
                 setEditingTask(null);
@@ -2371,6 +2435,7 @@ export default function App() {
               tasks={tasks}
               chatMessages={chatMessages}
               calendarEvents={calendarEvents}
+              adBanners={adBanners}
               deviceMode={effectiveDevice}
               onOpenNewTask={() => {
                 setEditingTask(null);

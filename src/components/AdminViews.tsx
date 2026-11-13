@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent } from '../types';
+import { AppUser, TaskItem, AuditLog, ChatMessage, CalendarEvent, AdBannerItem } from '../types';
 import {
   saveUserToFirestore,
   deleteUserFromFirestore,
@@ -10,6 +10,9 @@ import {
   writeRecoverySecurityState,
   RECOVERY_SECURITY_STORAGE_KEY,
   RecoverySecurityEntry,
+  saveAdBannerToFirestore,
+  deleteAdBannerFromFirestore,
+  cleanId,
   callResendApi,
 } from '../firebase';
 import {
@@ -53,13 +56,15 @@ interface AdminViewsProps {
     | 'admin_audit'
     | 'admin_backup'
     | 'admin_resend'
-    | 'admin_evaluation';
+    | 'admin_evaluation'
+    | 'admin_publicidad';
   currentUser: AppUser;
   users: AppUser[];
   tasks: TaskItem[];
   auditLogs: AuditLog[];
   chatMessages: ChatMessage[];
   calendarEvents: CalendarEvent[];
+  adBanners?: AdBannerItem[];
   onOpenNewTask: () => void;
   onEditTask: (task: TaskItem) => void;
   deviceMode?: 'mobile' | 'tablet' | 'pc';
@@ -94,6 +99,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   auditLogs,
   chatMessages,
   calendarEvents,
+  adBanners = [],
   onOpenNewTask,
   onEditTask,
   deviceMode = 'pc',
@@ -101,6 +107,129 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const isMobile = deviceMode === 'mobile';
   const [locallyDeletedTaskIds, setLocallyDeletedTaskIds] = useState<Record<string, boolean>>({});
   const tasks = rawTasks.filter(t => !locallyDeletedTaskIds[t.id]);
+  const [adminInfoModalTask, setAdminInfoModalTask] = useState<TaskItem | null>(null);
+
+  // Estados para la sección de Publicidad en Admin
+  const [adTitleInput, setAdTitleInput] = useState('');
+  const [adImageUrlInput, setAdImageUrlInput] = useState('');
+  const [adLinkUrlInput, setAdLinkUrlInput] = useState('');
+  const [adUploadLoading, setAdUploadLoading] = useState(false);
+  const [adStatusMsg, setAdStatusMsg] = useState<string | null>(null);
+  const adFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAdFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAdUploadLoading(true);
+    setAdStatusMsg(null);
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const dataUrl = String(ev.target?.result || '');
+      if (!dataUrl) {
+        setAdUploadLoading(false);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxWidth = 1280;
+          const maxHeight = 560;
+          let targetW = img.width || 800;
+          let targetH = img.height || 400;
+          if (targetW > maxWidth) {
+            targetH = Math.round((targetH * maxWidth) / targetW);
+            targetW = maxWidth;
+          }
+          if (targetH > maxHeight) {
+            targetW = Math.round((targetW * maxHeight) / targetH);
+            targetH = maxHeight;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, targetW, targetH);
+            const compressed = canvas.toDataURL('image/jpeg', 0.82);
+            setAdImageUrlInput(compressed);
+          } else {
+            setAdImageUrlInput(dataUrl);
+          }
+        } catch {
+          setAdImageUrlInput(dataUrl);
+        } finally {
+          setAdUploadLoading(false);
+        }
+      };
+      img.onerror = () => {
+        setAdImageUrlInput(dataUrl);
+        setAdUploadLoading(false);
+      };
+      img.src = dataUrl;
+    };
+    reader.onerror = () => {
+      setAdUploadLoading(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveNewAdBanner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanImg = adImageUrlInput.trim();
+    if (!cleanImg) {
+      setAdStatusMsg('Selecciona una foto desde tu dispositivo o pega una URL de imagen.');
+      return;
+    }
+    const newBanner: AdBannerItem = {
+      id: cleanId(`ad_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
+      title: adTitleInput.trim(),
+      imageUrl: cleanImg,
+      linkUrl: adLinkUrlInput.trim(),
+      active: true,
+      createdAt: new Date().toISOString(),
+    };
+    await saveAdBannerToFirestore(newBanner);
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'PUBLICAR_IMAGEN_PUBLICIDAD',
+      module: 'PUBLICIDAD_ADMIN',
+      description: `Publicó una imagen en el panel de Publicidad${newBanner.title ? `: "${newBanner.title}"` : ''}.`,
+      targetId: newBanner.id,
+      severity: 'info',
+    });
+    setAdTitleInput('');
+    setAdImageUrlInput('');
+    setAdLinkUrlInput('');
+    if (adFileInputRef.current) {
+      adFileInputRef.current.value = '';
+    }
+    setAdStatusMsg('Imagen de publicidad guardada y publicada en tiempo real.');
+    setTimeout(() => setAdStatusMsg(null), 4000);
+  };
+
+  const handleToggleAdBannerActive = async (ad: AdBannerItem) => {
+    await saveAdBannerToFirestore({
+      ...ad,
+      active: !ad.active,
+    });
+  };
+
+  const handleRemoveAdBanner = async (ad: AdBannerItem) => {
+    await deleteAdBannerFromFirestore(ad.id);
+    await recordAuditLog({
+      actorCedula: currentUser.cedula,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      actionType: 'ELIMINAR_IMAGEN_PUBLICIDAD',
+      module: 'PUBLICIDAD_ADMIN',
+      description: `Eliminó la imagen de publicidad${ad.title ? ` "${ad.title}"` : ''}.`,
+      targetId: ad.id,
+      severity: 'warning',
+    });
+  };
 
   // Pantallas internas de la sección admin_users
   const [adminUsersScreen, setAdminUsersScreen] = useState<AdminUsersScreen>('directory');
@@ -2724,15 +2853,29 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               return (
                 <div
                   key={task.id}
-                  className={`border rounded-xl overflow-hidden transition-all ${
+                  className={`task-card relative border rounded-xl overflow-hidden transition-all ${
                     isExpanded
                       ? 'border-[#0B2559] bg-white shadow-xs'
                       : 'border-[#B3D9FF] bg-white hover:border-[#7CC0FF]'
                   }`}
                 >
+                  {/* Icono de 'info' en la esquina superior derecha de la tarjeta */}
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setAdminInfoModalTask(task);
+                    }}
+                    className="absolute top-2.5 right-2.5 w-7 h-7 rounded-lg bg-[#EAF3FF] hover:bg-[#0B2559] text-[#0B2559] hover:text-white border border-[#B3D9FF] transition-colors flex items-center justify-center shadow-2xs z-10"
+                    title="Ver detalles completos: descripción extendida, historial de auditoría y fecha de creación"
+                    aria-label="Información completa de la tarea"
+                  >
+                    <i className="fi fi-rr-info text-xs" />
+                  </button>
+
                   <div
                     onClick={() => toggleTaskExpand(task.id)}
-                    className="flex items-center justify-between gap-3 px-4 py-2.5 cursor-pointer hover:bg-[#F4F9FF] transition-colors"
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 pr-12 cursor-pointer hover:bg-[#F4F9FF] transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span
@@ -2837,7 +2980,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                           </span>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-white p-5 rounded-2xl border border-[#B3D9FF] tabular-nums">
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 bg-white p-5 rounded-2xl border border-[#B3D9FF] tabular-nums">
                           <div>
                             <span className="text-[#3B82F6] block text-[11px] font-bold uppercase mb-1">Responsable Asignado</span>
                             <strong className="text-sm text-[#0B2559]">{task.assignedToName}</strong>{' '}
@@ -2846,6 +2989,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                           <div>
                             <span className="text-[#3B82F6] block text-[11px] font-bold uppercase mb-1">Creado Por</span>
                             <strong className="text-sm text-[#0B2559]">{task.createdByName}</strong>
+                          </div>
+                          <div>
+                            <span className="text-[#3B82F6] block text-[11px] font-bold uppercase mb-1">Fecha de Creación</span>
+                            <strong className="text-sm text-[#0B2559]">
+                              {task.createdAt ? new Date(task.createdAt).toLocaleString('es-CO') : 'Sin registro'}
+                            </strong>
                           </div>
                           <div>
                             <span className="text-[#3B82F6] block text-[11px] font-bold uppercase mb-1">Fecha Límite</span>
@@ -2902,6 +3051,196 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             })}
           </div>
         </div>
+
+        {adminInfoModalTask && (() => {
+          const taskAuditHistory = auditLogs
+            .filter(
+              log =>
+                log.targetId === adminInfoModalTask.id ||
+                (adminInfoModalTask.title &&
+                  log.description.toLowerCase().includes(adminInfoModalTask.title.toLowerCase()))
+            )
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+          const formattedCreatedAt = adminInfoModalTask.createdAt
+            ? new Date(adminInfoModalTask.createdAt).toLocaleString('es-CO', {
+                dateStyle: 'full',
+                timeStyle: 'short',
+              })
+            : 'Fecha no registrada';
+
+          const formattedDueDate = adminInfoModalTask.dueDate
+            ? new Date(adminInfoModalTask.dueDate).toLocaleString('es-CO', {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              })
+            : 'Sin fecha límite';
+
+          return (
+            <div
+              className="fixed inset-0 z-[110] bg-[#0B2559]/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
+              onClick={() => setAdminInfoModalTask(null)}
+            >
+              <div
+                className="bg-white border border-[#B3D9FF] rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="px-5 py-4 bg-[#0B2559] text-white flex items-center justify-between gap-3 border-b border-[#1A3A73] shrink-0">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-9 h-9 rounded-xl bg-[#B3D9FF] text-[#0B2559] flex items-center justify-center shrink-0">
+                      <i className="fi fi-rr-info text-base" />
+                    </span>
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-[#B3D9FF] block">
+                        Información Completa de la Tarea
+                      </span>
+                      <h3 className="text-sm sm:text-base font-extrabold text-white truncate">
+                        {adminInfoModalTask.title}
+                      </h3>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAdminInfoModalTask(null)}
+                    className="w-8 h-8 rounded-xl bg-white/15 hover:bg-white text-white hover:text-[#0B2559] flex items-center justify-center transition-colors shrink-0"
+                    title="Cerrar modal"
+                  >
+                    <i className="fi fi-rr-cross-small text-lg" />
+                  </button>
+                </div>
+
+                <div className="p-5 sm:p-6 overflow-y-auto space-y-5 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#3B82F6] flex items-center gap-1.5 mb-1">
+                        <i className="fi fi-rr-calendar-clock text-xs" />
+                        <span>Fecha de Creación</span>
+                      </span>
+                      <strong className="text-[#0B2559] block text-xs leading-snug">
+                        {formattedCreatedAt}
+                      </strong>
+                      <span className="text-[11px] text-[#0B2559]/70 mt-1 block">
+                        Por: {adminInfoModalTask.createdByName || 'Sistema'}
+                      </span>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#3B82F6] flex items-center gap-1.5 mb-1">
+                        <i className="fi fi-rr-user text-xs" />
+                        <span>Encargado y Prioridad</span>
+                      </span>
+                      <strong className="text-[#0B2559] block text-xs truncate">
+                        {adminInfoModalTask.assignedToCedula === 'ABIERTA'
+                          ? 'Abierta (Cualquiera)'
+                          : adminInfoModalTask.assignedToName}
+                      </strong>
+                      <span className="text-[11px] text-[#0B2559]/70 mt-1 block capitalize">
+                        Prioridad: {adminInfoModalTask.priority} · Estado: {adminInfoModalTask.status.replace('_', ' ')} ({adminInfoModalTask.status === 'completada' ? 100 : adminInfoModalTask.progress}%)
+                      </span>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#B3D9FF]">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#3B82F6] flex items-center gap-1.5 mb-1">
+                        <i className="fi fi-rr-clock text-xs" />
+                        <span>Fecha de Vencimiento</span>
+                      </span>
+                      <strong className="text-[#0B2559] block text-xs">
+                        {formattedDueDate}
+                      </strong>
+                      <span className="text-[11px] text-[#0B2559]/70 mt-1 block">
+                        Categoría: {adminInfoModalTask.category || 'Operaciones'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 space-y-3 shadow-2xs">
+                    <div className="flex items-center gap-2 text-[#0B2559] font-extrabold text-xs uppercase tracking-wider border-b border-[#EAF3FF] pb-2">
+                      <i className="fi fi-rr-document text-[#3B82F6]" />
+                      <span>Descripción Extendida</span>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] text-[#0B2559] text-xs sm:text-sm whitespace-pre-wrap leading-relaxed min-h-[72px]">
+                      {adminInfoModalTask.description
+                        ? adminInfoModalTask.description
+                        : 'Sin descripción extendida registrada para esta tarea.'}
+                    </div>
+                    {adminInfoModalTask.notes && (
+                      <div className="pt-1">
+                        <span className="block text-[11px] font-bold text-[#3B82F6] uppercase mb-1">
+                          Notas y Observaciones Técnicas
+                        </span>
+                        <div className="p-3 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] text-[#0B2559] text-xs whitespace-pre-wrap">
+                          {adminInfoModalTask.notes}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 space-y-3 shadow-2xs">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#EAF3FF] pb-2">
+                      <div className="flex items-center gap-2 text-[#0B2559] font-extrabold text-xs uppercase tracking-wider">
+                        <i className="fi fi-rr-shield-check text-[#3B82F6]" />
+                        <span>Historial de Auditoría de la Tarea</span>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#EAF3FF] text-[#0B2559] font-mono font-bold text-[11px]">
+                        {taskAuditHistory.length} {taskAuditHistory.length === 1 ? 'registro' : 'registros'}
+                      </span>
+                    </div>
+
+                    {taskAuditHistory.length === 0 ? (
+                      <div className="p-4 rounded-xl bg-[#F4F9FF] border border-[#D6EAFF] text-center text-slate-500 text-xs">
+                        No se encontraron eventos adicionales en el historial de auditoría para esta tarea.
+                      </div>
+                    ) : (
+                      <div className="max-h-60 overflow-y-auto divide-y divide-[#EAF3FF] border border-[#D6EAFF] rounded-xl bg-[#F4F9FF]/50">
+                        {taskAuditHistory.map(log => (
+                          <div key={log.id} className="p-3 hover:bg-white transition-colors space-y-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="inline-flex items-center gap-1.5 font-bold text-[#0B2559] text-xs">
+                                <span
+                                  className={`w-2 h-2 rounded-full ${
+                                    log.severity === 'critical'
+                                      ? 'bg-rose-500'
+                                      : log.severity === 'warning'
+                                      ? 'bg-amber-500'
+                                      : 'bg-[#3B82F6]'
+                                  }`}
+                                />
+                                <span>{log.actionType}</span>
+                              </span>
+                              <span className="text-[11px] font-mono text-[#3B82F6]">
+                                {new Date(log.timestamp).toLocaleString('es-CO', {
+                                  year: 'numeric',
+                                  month: '2-digit',
+                                  day: '2-digit',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                            </div>
+                            <p className="text-xs text-[#0B2559]/90 leading-snug">{log.description}</p>
+                            <div className="text-[10px] text-[#0B2559]/60 font-semibold">
+                              Usuario: {log.actorName} (C.C. {log.actorCedula}) · Rol: {log.actorRole.toUpperCase()}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="px-5 py-3.5 bg-[#F4F9FF] border-t border-[#D6EAFF] flex items-center justify-end gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setAdminInfoModalTask(null)}
+                    className="px-5 py-2 rounded-xl bg-[#0B2559] hover:bg-[#15397A] text-white font-bold text-xs transition-colors"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -5040,6 +5379,236 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // SECCIÓN: PUBLICIDAD (GESTIÓN DE IMÁGENES EN TIEMPO REAL)
+  // ============================================================================
+  if (activeSection === 'admin_publicidad') {
+    const activeAdsCount = adBanners.filter(a => a.active && a.imageUrl).length;
+
+    return (
+      <div className="space-y-4 pb-16">
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-[#0B2559] text-white flex items-center justify-center shrink-0">
+              <i className="fi fi-rr-picture text-base text-[#B3D9FF]" />
+            </span>
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#0B2559] flex items-center gap-2">
+                <span>Publicidad</span>
+                <span className="text-xs font-mono px-2.5 py-0.5 rounded-lg bg-[#EAF3FF] text-[#0B2559] border border-[#B3D9FF]">
+                  {activeAdsCount} activa{activeAdsCount === 1 ? '' : 's'}
+                </span>
+              </h2>
+              <p className="text-xs text-[#3B82F6]">
+                Las imágenes activas se muestran encima del bloque de Avance. Si no hay ninguna foto activa, el panel de publicidad no aparece.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Formulario para Subir o Agregar Imagen de Publicidad */}
+        <form
+          onSubmit={handleSaveNewAdBanner}
+          className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 shadow-2xs space-y-4 text-xs"
+        >
+          <h3 className="text-sm font-bold text-[#0B2559] flex items-center gap-2 border-b border-[#D6EAFF] pb-2.5">
+            <i className="fi fi-rr-cloud-upload-alt text-sm text-[#3B82F6]" />
+            <span>Agregar Nueva Imagen de Publicidad</span>
+          </h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="block font-bold text-[#0B2559]">
+                1. Subir Foto desde tu Computador o Teléfono
+              </label>
+              <input
+                ref={adFileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleAdFileUpload}
+                className="w-full px-3 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-[#0B2559] file:text-white hover:file:bg-[#15397A] cursor-pointer"
+              />
+              {adUploadLoading && (
+                <p className="text-[11px] text-[#3B82F6] font-semibold">
+                  Procesando y optimizando imagen...
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block font-bold text-[#0B2559]">
+                O pegar URL directa de la imagen
+              </label>
+              <input
+                type="text"
+                value={adImageUrlInput}
+                onChange={e => setAdImageUrlInput(e.target.value)}
+                placeholder="https://ejemplo.com/banner.jpg"
+                className="w-full min-h-[40px] px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block font-bold text-[#0B2559]">
+                Título o Descripción Corta (Opcional)
+              </label>
+              <input
+                type="text"
+                value={adTitleInput}
+                onChange={e => setAdTitleInput(e.target.value)}
+                placeholder="Ej. Comunicado institucional o campaña actual"
+                className="w-full min-h-[40px] px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block font-bold text-[#0B2559]">
+                Enlace al hacer clic (Opcional)
+              </label>
+              <input
+                type="text"
+                value={adLinkUrlInput}
+                onChange={e => setAdLinkUrlInput(e.target.value)}
+                placeholder="https://..."
+                className="w-full min-h-[40px] px-3.5 py-2 text-xs text-[#0B2559] bg-[#F4F9FF] border border-[#B3D9FF] rounded-xl focus:bg-white focus:outline-none focus:border-[#0B2559]"
+              />
+            </div>
+          </div>
+
+          {adImageUrlInput && (
+            <div className="space-y-1.5 pt-2">
+              <span className="block text-[11px] font-bold text-[#3B82F6] uppercase">
+                Vista Previa de la Imagen a Publicar:
+              </span>
+              <div className="bg-[#F4F9FF] border border-[#B3D9FF] rounded-2xl overflow-hidden max-w-2xl">
+                <img
+                  src={adImageUrlInput}
+                  alt="Vista previa"
+                  className="w-full max-h-[240px] object-cover block"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            </div>
+          )}
+
+          {adStatusMsg && (
+            <div className="p-3 rounded-xl bg-[#EAF3FF] border border-[#B3D9FF] text-[#0B2559] font-bold">
+              {adStatusMsg}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[#D6EAFF]">
+            {adImageUrlInput && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAdImageUrlInput('');
+                  setAdTitleInput('');
+                  setAdLinkUrlInput('');
+                  if (adFileInputRef.current) adFileInputRef.current.value = '';
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-[#0B2559] bg-[#F4F9FF] hover:bg-[#EAF3FF] border border-[#B3D9FF]"
+              >
+                Limpiar
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={adUploadLoading}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-[#0B2559] hover:bg-[#15397A] flex items-center gap-2 transition-colors shadow-2xs"
+            >
+              <i className="fi fi-rr-check text-xs text-[#B3D9FF]" />
+              <span>Guardar y Mostrar en el Panel</span>
+            </button>
+          </div>
+        </form>
+
+        {/* Listado de Imágenes de Publicidad Cargadas */}
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl p-4 sm:p-5 shadow-2xs space-y-3">
+          <div className="flex items-center justify-between border-b border-[#D6EAFF] pb-2.5">
+            <h3 className="text-sm font-bold text-[#0B2559] flex items-center gap-2">
+              <i className="fi fi-rr-images text-sm text-[#3B82F6]" />
+              <span>Imágenes de Publicidad Registradas ({adBanners.length})</span>
+            </h3>
+          </div>
+
+          {adBanners.length === 0 ? (
+            <div className="py-8 px-4 text-center text-xs text-[#3B82F6] bg-[#F4F9FF] rounded-xl border border-[#D6EAFF]">
+              No hay fotos de publicidad cargadas. Como no se ha puesto foto, el panel de publicidad permanece oculto encima del bloque de Avance.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {adBanners.map(ad => (
+                <div
+                  key={ad.id}
+                  className={`border rounded-2xl overflow-hidden flex flex-col justify-between transition-all ${
+                    ad.active
+                      ? 'border-[#0B2559] bg-white shadow-2xs'
+                      : 'border-slate-200 bg-slate-50/70 opacity-75'
+                  }`}
+                >
+                  <div>
+                    <div className="relative bg-[#F4F9FF] border-b border-[#D6EAFF]">
+                      <img
+                        src={ad.imageUrl}
+                        alt={ad.title || 'Publicidad'}
+                        className="w-full h-44 object-cover block"
+                        referrerPolicy="no-referrer"
+                      />
+                      <span
+                        className={`absolute top-2.5 right-2.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase ${
+                          ad.active
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-slate-600 text-white'
+                        }`}
+                      >
+                        {ad.active ? 'Visible en Panel' : 'Oculta'}
+                      </span>
+                    </div>
+
+                    <div className="p-3.5 space-y-1">
+                      <div className="text-xs font-bold text-[#0B2559] truncate">
+                        {ad.title || 'Imagen de publicidad sin título'}
+                      </div>
+                      {ad.linkUrl && (
+                        <div className="text-[11px] text-[#3B82F6] truncate font-mono">
+                          Enlace: {ad.linkUrl}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="px-3.5 py-2.5 bg-[#F4F9FF] border-t border-[#D6EAFF] flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleAdBannerActive(ad)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                        ad.active
+                          ? 'bg-amber-100 text-amber-900 hover:bg-amber-200'
+                          : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                      }`}
+                    >
+                      {ad.active ? 'Ocultar Foto' : 'Mostrar Foto'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveAdBanner(ad)}
+                      className="px-3 py-1.5 rounded-xl text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-600 hover:text-white border border-rose-200 transition-colors flex items-center gap-1.5"
+                    >
+                      <i className="fi fi-rr-trash text-xs" />
+                      <span>Eliminar</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

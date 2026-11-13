@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AppUser, TaskItem, TaskPriority, TaskStatus, CalendarEvent } from '../types';
+import { AppUser, TaskItem, TaskPriority, TaskStatus, CalendarEvent, AdBannerItem } from '../types';
 import {
   saveTaskToFirestore,
   deleteTaskFromFirestore,
@@ -28,6 +28,7 @@ interface UserViewsProps {
   users?: AppUser[];
   tasks: TaskItem[];
   calendarEvents?: CalendarEvent[];
+  adBanners?: AdBannerItem[];
   onOpenNewTask: () => void;
   deviceMode?: 'mobile' | 'tablet' | 'pc';
   [key: string]: any;
@@ -166,6 +167,7 @@ export const UserViews: React.FC<UserViewsProps> = ({
   users = [],
   tasks: rawTasks,
   calendarEvents = [],
+  adBanners = [],
   onOpenNewTask,
   onEditTask,
   deviceMode = 'pc',
@@ -173,6 +175,21 @@ export const UserViews: React.FC<UserViewsProps> = ({
   const isMobile = deviceMode === 'mobile';
   const [locallyDeletedTaskIds, setLocallyDeletedTaskIds] = useState<Record<string, boolean>>({});
   const tasks = rawTasks.filter(t => !locallyDeletedTaskIds[t.id]);
+  const activeAds = adBanners.filter(
+    ad => ad && ad.active !== false && Boolean(ad.imageUrl && ad.imageUrl.trim())
+  );
+  const [currentAdIndex, setCurrentAdIndex] = useState(0);
+
+  useEffect(() => {
+    if (activeAds.length <= 1) {
+      setCurrentAdIndex(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setCurrentAdIndex(prev => (prev + 1) % activeAds.length);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [activeAds.length]);
 
   // Estados para la sección Eventos (Calendario del mes actual)
   const [calendarDate, setCalendarDate] = useState<Date>(() => new Date());
@@ -196,8 +213,8 @@ export const UserViews: React.FC<UserViewsProps> = ({
 
   // Encargado seleccionado en el creador rápido por sección ('ABIERTA' o cédula de cualquier usuario)
   const [quickAssignees, setQuickAssignees] = useState<Record<TaskPriority, string>>({
-    critica: 'ABIERTA',
-    alta: 'ABIERTA',
+    critica: currentUser.cedula,
+    alta: currentUser.cedula,
     media: currentUser.cedula,
     baja: currentUser.cedula,
   });
@@ -268,12 +285,16 @@ export const UserViews: React.FC<UserViewsProps> = ({
   // Botón corredizo: Tareas Personales vs Tareas del Grupo Empresarial
   const [taskScope, setTaskScope] = useState<'personales' | 'grupo'>('personales');
 
-  const isTaskVisibleInPersonal = (t: TaskItem) =>
-    t.assignedToCedula === currentUser.cedula ||
-    t.createdByCedula === currentUser.cedula ||
-    t.assignedToCedula === 'ABIERTA';
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('ulep_task_scope_changed', { detail: taskScope }));
+  }, [taskScope]);
 
-  // Tareas base según la sección activa (Sección Personal del usuario que ingresó vs Tareas del Grupo)
+  // En Tareas Personales solo aparecen las tareas propias asignadas al usuario actual;
+  // en el otro apartado (Tareas del Grupo Empresarial) aparecen todas las tareas.
+  const isTaskVisibleInPersonal = (t: TaskItem) =>
+    String(t.assignedToCedula || '').trim() === String(currentUser.cedula || '').trim();
+
+  // Tareas base según la sección activa (Tareas Propias del usuario vs Todas las Tareas)
   const sectionTasks = tasks.filter(t =>
     taskScope === 'personales' ? isTaskVisibleInPersonal(t) : true
   );
@@ -473,7 +494,8 @@ export const UserViews: React.FC<UserViewsProps> = ({
     const text = (quickInputs[priority] || '').trim();
     if (!text) return;
 
-    const selectedAssignee = quickAssignees[priority] || 'ABIERTA';
+    const selectedAssignee =
+      taskScope === 'personales' ? currentUser.cedula : quickAssignees[priority] || currentUser.cedula;
     const isOpenTask = selectedAssignee === 'ABIERTA';
     const assignedUser = isOpenTask
       ? null
@@ -1247,59 +1269,85 @@ export const UserViews: React.FC<UserViewsProps> = ({
     );
   }
 
+  const safeAdIdx = activeAds.length > 0 ? currentAdIndex % activeAds.length : 0;
+  const currentAd = activeAds.length > 0 ? activeAds[safeAdIdx] : null;
+
   return (
     <div className={`space-y-4 mx-auto pb-20 ${isMobile ? 'max-w-lg' : 'max-w-6xl'}`}>
-      {/* COMPONENTE VISUAL DE BARRA DE PROGRESO CIRCULAR ÚNICA (Sección Personal o Tareas del Grupo del Usuario Actual) */}
-      <div className="bg-white border border-[#B3D9FF] rounded-2xl p-3.5 sm:p-4 shadow-2xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3.5">
-            <CircularProgressRing
-              percentage={sectionProgressPercent}
-              size={isMobile ? 58 : 66}
-              strokeWidth={6}
-              colorClass={
-                sectionProgressPercent >= 80
-                  ? 'text-emerald-600'
-                  : sectionProgressPercent >= 40
-                  ? 'text-[#3B82F6]'
-                  : 'text-[#0B2559]'
-              }
-              trackClass="text-[#D6EAFF]"
-              labelSizeClass="text-xs"
+      {/* PANEL DE PUBLICIDAD ENCIMA DEL BLOQUE SELECCIONADO (SOLO APARECE SI HAY FOTO ACTIVA) */}
+      {currentAd && currentAd.imageUrl && (
+        <div className="bg-white border border-[#B3D9FF] rounded-2xl overflow-hidden shadow-2xs relative group">
+          {currentAd.linkUrl ? (
+            <a
+              href={currentAd.linkUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block w-full"
+            >
+              <img
+                src={currentAd.imageUrl}
+                alt={currentAd.title || 'Publicidad'}
+                className="w-full max-h-[260px] sm:max-h-[320px] object-cover block"
+                referrerPolicy="no-referrer"
+              />
+            </a>
+          ) : (
+            <img
+              src={currentAd.imageUrl}
+              alt={currentAd.title || 'Publicidad'}
+              className="w-full max-h-[260px] sm:max-h-[320px] object-cover block"
+              referrerPolicy="no-referrer"
             />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-xs sm:text-sm font-bold text-[#0B2559]">
-                  {taskScope === 'personales'
-                    ? `Avance de Sección Personal — ${currentUser.name}`
-                    : `Avance de Tareas del Grupo Empresarial — ${currentUser.name}`}
-                </h2>
-                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#0B2559] text-white">
-                  {taskScope === 'personales' ? 'Sección Personal' : 'Tareas del Grupo'}
-                </span>
-              </div>
-              <p className="text-[11px] text-[#3B82F6] mt-0.5">
-                {taskScope === 'personales'
-                  ? 'Porcentaje de avance de tus tareas personales asignadas, creadas por ti o abiertas.'
-                  : 'Porcentaje de avance general de las tareas en la sección del Grupo Empresarial.'}
-              </p>
-            </div>
-          </div>
+          )}
 
-          {/* Resumen numérico tabular de la sección activa */}
-          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] tabular-nums sm:justify-end">
-            <span className="px-2.5 py-1 rounded-xl font-bold bg-amber-50 text-amber-800 border border-amber-200">
-              Pendientes: {sectionPendingTotalCount}
-            </span>
-            <span className="px-2.5 py-1 rounded-xl font-bold bg-[#EAF3FF] text-[#0B2559] border border-[#B3D9FF]">
-              En proceso: {sectionInProgressCount}
-            </span>
-            <span className="px-2.5 py-1 rounded-xl font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              Hechas: {sectionCompletedCount}
-            </span>
-          </div>
+          {currentAd.title && (
+            <div className="px-4 py-2 bg-[#0B2559]/90 text-white text-xs font-bold flex items-center justify-between gap-2">
+              <span className="truncate">{currentAd.title}</span>
+              {activeAds.length > 1 && (
+                <span className="text-[10px] font-mono text-[#B3D9FF] shrink-0">
+                  {safeAdIdx + 1} / {activeAds.length}
+                </span>
+              )}
+            </div>
+          )}
+
+          {activeAds.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  setCurrentAdIndex(prev => (prev - 1 + activeAds.length) % activeAds.length)
+                }
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-[#0B2559]/75 hover:bg-[#0B2559] text-white flex items-center justify-center transition-colors shadow-xs"
+                title="Imagen anterior"
+              >
+                <i className="fi fi-rr-angle-left text-xs" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentAdIndex(prev => (prev + 1) % activeAds.length)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-[#0B2559]/75 hover:bg-[#0B2559] text-white flex items-center justify-center transition-colors shadow-xs"
+                title="Siguiente imagen"
+              >
+                <i className="fi fi-rr-angle-right text-xs" />
+              </button>
+              <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#0B2559]/60 backdrop-blur-xs">
+                {activeAds.map((ad, idx) => (
+                  <button
+                    key={ad.id}
+                    type="button"
+                    onClick={() => setCurrentAdIndex(idx)}
+                    className={`w-2 h-2 rounded-full transition-all ${
+                      idx === safeAdIdx ? 'bg-white w-4' : 'bg-white/50 hover:bg-white/80'
+                    }`}
+                    title={`Imagen ${idx + 1}`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </div>
-      </div>
+      )}
 
       {taskCompletePermNotice && (
         <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2.5 text-xs font-bold flex items-center justify-between gap-2 shadow-2xs">
@@ -1557,100 +1605,15 @@ export const UserViews: React.FC<UserViewsProps> = ({
             )}
           </div>
         </div>
-
-        {/* Barra de Filtros Rápidos: Mis tareas pendientes, Tareas completadas, Tareas con prioridad crítica */}
-        <div className="pt-2.5 border-t border-[#EAF3FF] flex flex-wrap items-center gap-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-[#0B2559]/70 flex items-center gap-1.5 mr-1">
-            <i className="fi fi-rr-bolt text-xs text-[#3B82F6]" />
-            <span>Filtros rápidos:</span>
-          </span>
-
-          <button
-            type="button"
-            onClick={() => handleApplyQuickFilter('mis_pendientes')}
-            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-              quickFilter === 'mis_pendientes'
-                ? 'bg-[#0B2559] text-white border-[#0B2559] shadow-xs'
-                : 'bg-[#F4F9FF] text-[#0B2559] border-[#B3D9FF] hover:bg-[#EAF3FF]'
-            }`}
-          >
-            <i className="fi fi-rr-time-fast text-xs shrink-0" />
-            <span>Mis tareas pendientes</span>
-            <span
-              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
-                quickFilter === 'mis_pendientes'
-                  ? 'bg-[#B3D9FF] text-[#0B2559]'
-                  : 'bg-white text-[#0B2559] border border-[#B3D9FF]'
-              }`}
-            >
-              {myPendingTasksCount}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleApplyQuickFilter('completadas')}
-            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-              quickFilter === 'completadas'
-                ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
-                : 'bg-emerald-50/70 text-emerald-800 border-emerald-200 hover:bg-emerald-100/70'
-            }`}
-          >
-            <i className="fi fi-rr-check-circle text-xs shrink-0" />
-            <span>Tareas completadas</span>
-            <span
-              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
-                quickFilter === 'completadas'
-                  ? 'bg-white text-emerald-800'
-                  : 'bg-white text-emerald-800 border border-emerald-200'
-              }`}
-            >
-              {completedTasksCount}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleApplyQuickFilter('criticas')}
-            className={`min-h-[36px] sm:min-h-0 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-              quickFilter === 'criticas'
-                ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
-                : 'bg-rose-50/80 text-rose-700 border-rose-200 hover:bg-rose-100/70'
-            }`}
-          >
-            <i className="fi fi-rr-flame text-xs shrink-0" />
-            <span>Tareas con prioridad crítica</span>
-            <span
-              className={`px-1.5 py-0.5 text-[10px] font-mono rounded-md font-bold ${
-                quickFilter === 'criticas'
-                  ? 'bg-white text-rose-700'
-                  : 'bg-white text-rose-700 border border-rose-200'
-              }`}
-            >
-              {criticalTasksCount}
-            </span>
-          </button>
-
-          {quickFilter !== 'ninguno' && (
-            <button
-              type="button"
-              onClick={() => handleApplyQuickFilter('ninguno')}
-              className="min-h-[36px] sm:min-h-0 px-2.5 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors flex items-center gap-1 ml-auto"
-            >
-              <i className="fi fi-rr-cross-small text-sm" />
-              <span>Ver todas</span>
-            </button>
-          )}
-        </div>
       </div>
 
-      {/* Secciones de la Lista Ordenadas por Importancia */}
+      {/* Secciones de la Lista Unidas en un Solo Cuadro con Bordes Suaves */}
       <div
-        className={
+        className={`bg-white border border-[#B3D9FF]/80 rounded-2xl overflow-hidden shadow-2xs ${
           !isMobile && desktopGridLayout === 'grid' && visibleSections.length > 1
-            ? 'grid grid-cols-1 lg:grid-cols-2 gap-4 items-start'
-            : 'space-y-3.5'
-        }
+            ? 'grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#D6EAFF]/80'
+            : 'divide-y divide-[#D6EAFF]/80'
+        }`}
       >
         {visibleSections.map(sec => {
           const allSectionTasks = scopedTasks.filter(t => t.priority === sec.key);
@@ -1665,11 +1628,11 @@ export const UserViews: React.FC<UserViewsProps> = ({
           return (
             <div
               key={sec.key}
-              className={`bg-white border ${sec.borderColor} rounded-2xl overflow-hidden shadow-2xs`}
+              className="bg-white"
             >
               {/* Encabezado limpio de la sección */}
               <div
-                className={`${sec.accentBg} px-4 py-2.5 border-b ${sec.borderColor} flex items-center justify-between gap-3`}
+                className={`${sec.accentBg} px-4 py-2.5 border-b border-[#E5F0FF] flex items-center justify-between gap-3`}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${sec.dotColor}`} />
@@ -1750,16 +1713,6 @@ export const UserViews: React.FC<UserViewsProps> = ({
                                 >
                                   {task.title}
                                 </span>
-                                {task.assignedToCedula === 'ABIERTA' ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
-                                    <span>🌐 Abierta (Cualquiera)</span>
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#F4F9FF] text-[#0B2559] border border-[#B3D9FF] whitespace-nowrap">
-                                    <i className="fi fi-rr-user text-[9px] text-[#3B82F6]" />
-                                    <span className="truncate max-w-[140px]">{task.assignedToName}</span>
-                                  </span>
-                                )}
                               </div>
 
                               {/* En PC y Tablet se muestra información adicional en línea; en Teléfono se oculta para que se vea más sencilla */}
@@ -1776,20 +1729,12 @@ export const UserViews: React.FC<UserViewsProps> = ({
                                       <span>Vence: {task.dueDate.split('T')[0]}</span>
                                     </>
                                   )}
-                                  {(task.accessEmail || task.directLink) && (
-                                    <>
-                                      <span>·</span>
-                                      <span className="text-[#0B2559] font-medium">
-                                        Incluye credenciales/link
-                                      </span>
-                                    </>
-                                  )}
                                 </div>
                               )}
                             </div>
                           </div>
 
-                          {/* Botones de Estado Cliqueables: Iniciada, En proceso, Hecha + Ver + Eliminar */}
+                          {/* Botones de Estado Cliqueables: Iniciada, En proceso, Hecha + Eliminar */}
                           <div className="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pl-9 sm:pl-0">
                             <div className="inline-flex items-center p-0.5 rounded-lg bg-[#F4F9FF] border border-[#B3D9FF]/70">
                               <button
@@ -1837,16 +1782,6 @@ export const UserViews: React.FC<UserViewsProps> = ({
                             </div>
 
                             <div className="flex items-center gap-1">
-                              {/* Botón Ver Detalles en Pantalla Completa */}
-                              <button
-                                type="button"
-                                onClick={() => setViewingTask(task)}
-                                className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 text-slate-500 hover:text-[#0B2559] hover:bg-[#EAF3FF] rounded-lg transition-colors flex items-center justify-center"
-                                title="Abrir detalle de la actividad en toda la pantalla"
-                              >
-                                <i className="fi fi-rr-eye text-xs" />
-                              </button>
-
                               {/* Botón Editar Actividad (solo Admin y Personal Autorizado) */}
                               {canEditActivity && onEditTask && (
                                 <button
